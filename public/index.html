@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Minecraft 服务器管理</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="header">
+    <h1>MC 服务器管理</h1>
+    <div style="display: flex; align-items: center; gap: 1.25rem;">
+      <button id="themeToggle" class="btn btn-secondary" onclick="toggleTheme()" style="padding: 0.5rem 1rem;">
+        <i class="fas fa-moon"></i>
+      </button>
+      <div class="connection-status">
+        <div class="status-dot" id="wsStatus"></div>
+        <span id="wsStatusText">未连接</span>
+      </div>
+      <button class="btn btn-outline-danger btn-sm" onclick="logout()">
+        <i class="fas fa-sign-out-alt"></i> 退出
+      </button>
+    </div>
+  </div>
+
+  <div class="container">
+    <div class="sidebar">
+      <div class="nav-item menu-parent open" id="mcParent">
+        <span><i class="fas fa-dragon"></i> Minecraft 服务器</span>
+        <i class="fas fa-chevron-down menu-arrow"></i>
+      </div>
+      <div class="nav-sub-items open" id="mcSubItems">
+        <div class="nav-item active" data-page="mc_stats">
+          <i class="fas fa-chart-line"></i> 性能监控
+        </div>
+        <div class="nav-item" data-page="mc_console">
+          <i class="fas fa-terminal"></i> 控制台
+        </div>
+        <div class="nav-item" data-page="mc_players">
+          <i class="fas fa-users"></i> 在线玩家
+        </div>
+        <div class="nav-item" data-page="startup">
+          <i class="fas fa-rocket"></i> 启动设置
+        </div>
+      </div>
+    </div>
+
+    <div class="main-content">
+      <!-- MC 工具栏 -->
+      <div id="mcToolbar" class="toolbar" style="display: flex; flex-wrap: wrap; gap: 0.75rem;">
+        <div style="flex: 1; min-width: 240px; display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+          <select id="mcServerSelect" onchange="switchMcServer()" style="min-width: 180px; max-width: 260px;">
+            <option value="">(未选择实例)</option>
+          </select>
+          <button class="btn btn-secondary" onclick="createMcServer()"><i class="fas fa-plus"></i> 新增实例</button>
+          <button class="btn btn-danger" onclick="confirmDeleteMcServer()"><i class="fas fa-trash-alt"></i> 删除实例</button>
+          <button class="btn btn-success" onclick="startMinecraftServer()"><i class="fas fa-play"></i> 启动</button>
+          <button class="btn btn-warning" onclick="stopMinecraftServer()"><i class="fas fa-stop"></i> 停止</button>
+          <button class="btn btn-danger" onclick="killMinecraftServer()"><i class="fas fa-bomb"></i> 强制终止</button>
+          <button class="btn btn-info" onclick="downloadMcLog()"><i class="fas fa-download"></i> 下载日志</button>
+          <button id="mcSyncBtn" class="btn btn-secondary"><i class="fas fa-search"></i> 同步状态</button>
+          <span style="color: var(--gray);">状态: <strong id="mcStatus">未知</strong></span>
+          <span style="color: var(--gray);">PID: <strong id="mcPid">-</strong></span>
+        </div>
+      </div>
+
+      <!-- 性能监控 -->
+      <div id="mc_statsPage" class="page">
+        <div class="card" style="margin-top: 1rem;">
+          <h3><i class="fas fa-chart-line"></i> 性能监控</h3>
+          <div id="mcStats" style="min-height: 100px;">
+            <div class="mc-stats-grid">
+              <div class="mc-stats-card"><span><i class="fas fa-microchip"></i> CPU 使用</span><strong id="mcCpu">-</strong></div>
+              <div class="mc-stats-card"><span><i class="fas fa-server"></i> 内存使用</span><strong id="mcMemory">-</strong></div>
+              <div class="mc-stats-card"><span><i class="fas fa-tachometer-alt"></i> TPS</span><strong id="mcTps">-</strong></div>
+              <div class="mc-stats-card"><span><i class="fas fa-sync-alt"></i> 自动重启</span><strong id="mcAutoRestart">-</strong></div>
+            </div>
+            <div class="mc-stats-toolbar">
+              <span style="color: var(--gray); font-size: 0.95rem;">时间范围：</span>
+              <select id="mcStatsRangeSelect" onchange="setMcStatsRange(this.value)">
+                <option value="5m">最近 5 分钟</option>
+                <option value="15m" selected>最近 15 分钟</option>
+                <option value="1h">最近 1 小时</option>
+              </select>
+            </div>
+          </div>
+          <div class="mc-stats-chart-wrapper">
+            <canvas id="mcStatsChart" width="740" height="260"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- 控制台 -->
+      <div id="mc_consolePage" class="page" style="display: none;">
+        <div class="card">
+          <h3><i class="fas fa-terminal"></i> 控制台</h3>
+          <div class="form-group" style="margin-bottom: 0.75rem;">
+            <div class="input-group" style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
+              <input type="text" id="mcConsoleFilter" placeholder="过滤日志..." autocomplete="off" style="flex: 1; min-width: 220px;" />
+              <input type="text" id="mcCommandInput" placeholder="输入命令并回车" autocomplete="off" style="flex: 1; min-width: 220px;" />
+              <button class="btn btn-secondary" onclick="sendMcCommand()"><i class="fas fa-terminal"></i> 发送</button>
+              <button class="btn btn-secondary" onclick="clearMcConsole()"><i class="fas fa-broom"></i> 清屏</button>
+              <button class="btn btn-secondary" onclick="toggleMcAutoScroll()" id="mcAutoScrollBtn"><i class="fas fa-lock-open"></i> 自动滚动</button>
+            </div>
+          </div>
+          <pre id="mcStdout" style="height: 360px; overflow-y: auto; background: #111827; color: #e5e7eb; padding: 1rem; border-radius: 0.75rem; white-space: pre-wrap; word-break: break-word;"></pre>
+        </div>
+      </div>
+
+      <!-- 在线玩家 -->
+      <div id="mc_playersPage" class="page" style="display: none;">
+        <div class="card">
+          <h3><i class="fas fa-users"></i> 在线玩家</h3>
+          <div class="toolbar" style="justify-content: flex-start; gap: 0.75rem;">
+            <button class="btn btn-primary" onclick="refreshMcPlayerList()"><i class="fas fa-sync-alt"></i> 刷新玩家列表</button>
+            <span style="color: var(--gray);">在线玩家: <strong id="mcPlayerCount">0</strong> / <strong id="mcPlayerMax">-</strong></span>
+          </div>
+          <div id="mcPlayerList" style="min-height: 140px; margin-top: 1rem;">
+            <p class="mc-player-empty">请点击“刷新玩家列表”以获取当前在线玩家。</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 启动设置 -->
+      <div id="startupPage" class="page" style="display: none;">
+        <div class="card">
+          <h3><i class="fas fa-rocket"></i> 启动设置</h3>
+          <div id="mcSelectedServerLabel" style="margin-bottom: 1rem; color: var(--gray);">当前实例：<strong id="mcSelectedServerName">未选择实例</strong></div>
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 0.75rem; margin-bottom: 1rem;">
+            <div class="form-group" style="margin-bottom: 0;">
+              <label>Java 路径</label>
+              <input type="text" id="mcJavaPath" placeholder="java" value="java" />
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+              <label>最小内存 (Xms)</label>
+              <input type="text" id="mcMinMemory" placeholder="1024M" value="1024M" />
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+              <label>最大内存 (Xmx)</label>
+              <input type="text" id="mcMaxMemory" placeholder="4096M" value="4096M" />
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+              <label>JAR 文件路径</label>
+              <input type="text" id="mcJarPath" placeholder="server.jar" value="server.jar" />
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label>额外 JVM 参数</label>
+            <textarea id="mcAdditionalArgs" rows="3" placeholder='例如：-XX:+UseG1GC ...' style="width: 100%; font-family: monospace;"></textarea>
+          </div>
+
+          <div class="form-group">
+            <label>完整命令预览 (只读)</label>
+            <textarea id="mcConfigCommandPreview" readonly rows="3" style="resize: vertical; font-family: monospace; background: var(--light); color: var(--gray);"></textarea>
+          </div>
+
+          <div class="form-group">
+            <label>工作目录</label>
+            <input type="text" id="mcConfigDir" placeholder="Minecraft 服务器文件夹路径" />
+          </div>
+          <div class="form-group">
+            <label>备份目录</label>
+            <input type="text" id="mcBackupDir" placeholder="例如: backups 或 D:\\minecraft_backups" />
+          </div>
+
+          <div class="form-group">
+            <label class="switch-label">
+              <input type="checkbox" id="mcAutoRestartInput">
+              <span class="switch-slider"></span>
+              <span class="switch-text">自动重启</span>
+            </label>
+          </div>
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;">
+            <div class="form-group">
+              <label>自动重启延迟（秒）</label>
+              <input type="number" id="mcAutoRestartDelay" min="1" value="5">
+            </div>
+            <div class="form-group">
+              <label>最大自动重启次数</label>
+              <input type="number" id="mcAutoRestartMaxRetries" min="0" value="3">
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label>刷新频率</label>
+            <select id="mcRefreshPreset">
+              <option value="standard">标准（约 1 秒）</option>
+              <option value="fast">快（约 0.5 秒）</option>
+              <option value="slow">慢（约 5 秒）</option>
+              <option value="custom">自定义</option>
+            </select>
+          </div>
+          <div class="form-group" style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.75rem;">
+            <div>
+              <label>玩家列表间隔（秒）</label>
+              <input type="number" step="0.1" id="mcPlayerListInterval" min="0.1" value="5">
+            </div>
+            <div>
+              <label>性能统计间隔（秒）</label>
+              <input type="number" step="0.1" id="mcStatsInterval" min="0.1" value="15">
+            </div>
+            <div>
+              <label>TPS 刷新间隔（秒）</label>
+              <input type="number" step="0.1" id="mcTpsInterval" min="0.1" value="5">
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="switch-label">
+              <input type="checkbox" id="mcAutoBackupEnable">
+              <span class="switch-slider"></span>
+              <span class="switch-text">启用自动备份</span>
+            </label>
+          </div>
+          <div class="form-group">
+            <label>自动备份时间</label>
+            <input type="text" id="mcAutoBackupCron" placeholder="例如: 0 4 * * * (每天 4 点)" />
+          </div>
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;">
+            <div class="form-group">
+              <label>保留最近备份数量</label>
+              <input type="number" id="mcBackupRetentionCount" min="1" value="7">
+            </div>
+            <div class="form-group">
+              <label>保留备份天数</label>
+              <input type="number" id="mcBackupRetentionDays" min="0" value="30">
+            </div>
+          </div>
+
+          <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
+            <button class="btn btn-primary" onclick="saveMcConfig()"><i class="fas fa-save"></i> 保存配置</button>
+            <button class="btn btn-secondary" onclick="loadMcConfig()"><i class="fas fa-sync-alt"></i> 重新加载</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 确认模态框 -->
+  <div class="modal" id="confirmModal">
+    <div class="modal-content" style="max-width: 400px;">
+      <div class="modal-header">
+        <h3 id="confirmTitle">确认操作</h3>
+        <button class="close-btn" onclick="hideModal('confirmModal')">&times;</button>
+      </div>
+      <p id="confirmMessage" style="margin-bottom: 1.5rem;"></p>
+      <div style="display: flex; justify-content: flex-end; gap: 0.75rem;">
+        <button class="btn btn-secondary" onclick="hideModal('confirmModal')">取消</button>
+        <button class="btn btn-primary" id="confirmOkBtn">确认</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast" id="toast"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="/app.js"></script>
+  <script src="/mc_console.js"></script>
+</body>
+</html>
