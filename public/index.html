@@ -44,6 +44,17 @@
           <i class="fas fa-rocket"></i> 启动设置
         </div>
       </div>
+
+      <!-- 系统菜单移入侧边栏 -->
+      <div class="nav-item menu-parent" id="systemParent">
+        <span><i class="fas fa-info-circle"></i> 系统</span>
+        <i class="fas fa-chevron-down menu-arrow"></i>
+      </div>
+      <div class="nav-sub-items" id="systemSubItems">
+        <div class="nav-item" data-page="system">
+          <i class="fas fa-desktop"></i> 系统信息
+        </div>
+      </div>
     </div>
 
     <div class="main-content">
@@ -238,6 +249,23 @@
           </div>
         </div>
       </div>
+
+      <!-- 系统信息页面 -->
+      <div id="systemPage" class="page" style="display: none;">
+        <div class="card">
+          <h3><i class="fas fa-desktop"></i> 系统信息</h3>
+          <div style="margin-bottom: 1rem;">
+            <p><strong>系统版本:</strong> 1.0.0</p>
+            <p><strong>作者:</strong> Yuebi, 辰艾</p>
+            <p><strong>版权:</strong> © 2026 Keylogger Server</p>
+            <p><strong>描述:</strong> 用于管理和监控键盘记录客户端的服务器系统</p>
+          </div>
+          <div style="border-top: 1px solid var(--gray-light); padding-top: 1rem;">
+            <p><strong>服务器状态:</strong> <span id="serverStatus">运行中</span></p>
+            <p><strong>当前时间:</strong> <span id="currentTime"></span></p>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -259,6 +287,7 @@
   <!-- Toast -->
   <div class="toast" id="toast"></div>
 
+  
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="/app.js"></script>
   <script src="/mc_console.js"></script>

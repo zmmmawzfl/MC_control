@@ -100,7 +100,6 @@ function verifyAuthToken(token) {
 // ========== Express 应用 ==========
 const app = express();
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public'))); // 静态文件
 
 // 登录限流
 const loginLimiter = rateLimit({
@@ -110,12 +109,23 @@ const loginLimiter = rateLimit({
   message: { error: '登录尝试过多，请稍后再试' },
 });
 
-// 认证中间件（除登录页面外都需要）
+// ========== 认证中间件（静态资源放行） ==========
 function authMiddleware(req, res, next) {
-  if (req.path === '/login.html' || req.path === '/') return next();
-  if (req.path === '/api/login') return next();
+  // 公开路径：登录页面、登录API
+  if (req.path === '/login.html' || req.path === '/api/login') {
+    return next();
+  }
+  // 静态资源扩展名直接放行（不要求认证）
+  const ext = path.extname(req.path);
+  if (['.css', '.js', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.json', '.map'].includes(ext)) {
+    return next();
+  }
+  // 检查认证
   const cookies = parseCookies(req.headers.cookie || '');
-  if (verifyAuthToken(cookies[AUTH_CONFIG.cookieName])) return next();
+  if (verifyAuthToken(cookies[AUTH_CONFIG.cookieName])) {
+    return next();
+  }
+  // 未认证：API 返回 401，页面重定向到登录
   if (req.path.startsWith('/api/')) {
     return res.status(401).json({ error: '未授权' });
   }
@@ -123,9 +133,12 @@ function authMiddleware(req, res, next) {
 }
 app.use(authMiddleware);
 
+// ========== 静态文件服务（在认证之后，但认证中间件已放行静态资源） ==========
+app.use(express.static(__dirname));
+
 // ========== 登录路由 ==========
 app.get('/login.html', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'login.html'));
+  res.sendFile(path.join(__dirname, 'login.html'));
 });
 
 app.post('/api/login', loginLimiter, async (req, res) => {

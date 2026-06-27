@@ -76,6 +76,22 @@ document.getElementById('confirmOkBtn')?.addEventListener('click', () => {
     }
 });
 
+// ========== 认证检查 ==========
+async function checkAuth() {
+    try {
+        const res = await fetch('/api/mc/servers');
+        if (res.status === 401) {
+            window.location.href = '/login.html';
+            return false;
+        }
+        return true;
+    } catch (e) {
+        // 网络错误时也重定向到登录
+        window.location.href = '/login.html';
+        return false;
+    }
+}
+
 // ========== WebSocket ==========
 let ws = null;
 let reconnectTimer = null;
@@ -92,11 +108,10 @@ function connectWebSocket() {
         document.getElementById('wsStatusText').textContent = '已连接';
         reconnectAttempts = 0;
         showToast('已连接到服务器', 'success');
-        // 订阅 MC 事件
-        const serverId = window.currentMcServerId || '*';
-        ws.send(JSON.stringify({ type: 'subscribe_mc', serverId }));
-        ws.send(JSON.stringify({ type: 'subscribe_mc_players', serverId }));
-        ws.send(JSON.stringify({ type: 'subscribe_mc_stats', serverId }));
+        // 使用 '*' 订阅所有服务器
+        ws.send(JSON.stringify({ type: 'subscribe_mc', serverId: '*' }));
+        ws.send(JSON.stringify({ type: 'subscribe_mc_players', serverId: '*' }));
+        ws.send(JSON.stringify({ type: 'subscribe_mc_stats', serverId: '*' }));
     };
     ws.onclose = (event) => {
         document.getElementById('wsStatus').classList.remove('connected');
@@ -131,11 +146,9 @@ function connectWebSocket() {
 function handleWebSocketMessage(data) {
     switch (data.type) {
         case 'ws_connected':
-            // 订阅 MC 事件
-            const sid = window.currentMcServerId || '*';
-            ws.send(JSON.stringify({ type: 'subscribe_mc', serverId: sid }));
-            ws.send(JSON.stringify({ type: 'subscribe_mc_players', serverId: sid }));
-            ws.send(JSON.stringify({ type: 'subscribe_mc_stats', serverId: sid }));
+            ws.send(JSON.stringify({ type: 'subscribe_mc', serverId: '*' }));
+            ws.send(JSON.stringify({ type: 'subscribe_mc_players', serverId: '*' }));
+            ws.send(JSON.stringify({ type: 'subscribe_mc_stats', serverId: '*' }));
             break;
         case 'mc_log':
             if (typeof appendMcLog === 'function') appendMcLog({ text: data.line, level: data.level });
@@ -152,7 +165,6 @@ function handleWebSocketMessage(data) {
             }
             break;
         default:
-            // 忽略其他类型
             break;
     }
 }
@@ -166,9 +178,7 @@ document.querySelectorAll('.nav-item[data-page]').forEach(item => {
         item.classList.add('active');
         document.querySelectorAll('.page').forEach(p => p.style.display = 'none');
         document.getElementById(page + 'Page').style.display = 'block';
-        // 显示/隐藏 MC 工具栏（所有 MC 页面都显示）
         document.getElementById('mcToolbar').style.display = 'flex';
-        // 页面加载时调用对应的刷新函数
         if (page === 'mc_stats') {
             if (typeof loadMcStatus === 'function') loadMcStatus();
             if (typeof loadMcConfig === 'function') loadMcConfig();
@@ -181,7 +191,6 @@ document.querySelectorAll('.nav-item[data-page]').forEach(item => {
             if (typeof loadMcStatus === 'function') loadMcStatus();
         } else if (page === 'mc_players') {
             if (typeof loadMcPlayers === 'function') loadMcPlayers();
-            // 如果数据过期则刷新
             if (Date.now() - (window.mcPlayersLastUpdate || 0) > 15000 && typeof refreshMcPlayerList === 'function') {
                 refreshMcPlayerList();
             }
@@ -191,14 +200,18 @@ document.querySelectorAll('.nav-item[data-page]').forEach(item => {
     });
 });
 
-// 父级菜单展开/折叠
 document.getElementById('mcParent')?.addEventListener('click', function() {
     this.classList.toggle('open');
     document.getElementById('mcSubItems').classList.toggle('open');
 });
-// 默认展开
 document.getElementById('mcParent')?.classList.add('open');
 document.getElementById('mcSubItems')?.classList.add('open');
+
+// 系统菜单切换
+document.getElementById('systemParent')?.addEventListener('click', function() {
+    this.classList.toggle('open');
+    document.getElementById('systemSubItems').classList.toggle('open');
+});
 
 // ========== 退出登录 ==========
 function logout() {
@@ -209,7 +222,7 @@ function logout() {
     });
 }
 
-// ========== 更新当前时间（可选） ==========
+// ========== 更新当前时间 ==========
 function updateCurrentTime() {
     const el = document.getElementById('currentTime');
     if (el) el.textContent = new Date().toLocaleString();
@@ -223,8 +236,21 @@ window.addEventListener('beforeunload', () => {
     if (ws && ws.readyState === WebSocket.OPEN) ws.close();
 });
 
-// ========== 启动 WebSocket ==========
-connectWebSocket();
+// ========== 启动 ==========
+async function initApp() {
+    const authed = await checkAuth();
+    if (!authed) return;
+    // 认证通过后初始化
+    connectWebSocket();
+    // 加载服务器列表（由 mc_console.js 处理）
+    if (typeof loadMcServers === 'function') {
+        loadMcServers();
+    }
+    // 默认显示第一个页面（性能监控）
+    document.querySelector('.nav-item[data-page="mc_stats"]')?.click();
+}
+
+document.addEventListener('DOMContentLoaded', initApp);
 
 // ========== 暴露全局函数供 HTML 调用 ==========
 window.toggleTheme = toggleTheme;

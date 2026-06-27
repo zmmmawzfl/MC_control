@@ -19,8 +19,6 @@ const MC_REFRESH_PRESET_VALUES = {
   slow: { playerListIntervalSeconds: 15, statsIntervalSeconds: 30, tpsIntervalSeconds: 15 }
 };
 let mcStatsChartRange = '15m';
-
-// 多服务器支持：当前选中的服务器 ID
 let currentMcServerId = null;
 
 function sleep(ms) {
@@ -252,90 +250,90 @@ function appendMcLog(line) {
   renderMcConsole();
 }
 
-  // Backups UI
-  async function loadMcBackups() {
-    try {
-      await ensureMcServerSelected();
-      const resp = await fetch(mcApi('/backups'));
-      const data = await resp.json();
-      const container = document.getElementById('mcBackupsList');
-      if (!container) return;
-      if (!data.success) {
-        container.innerHTML = `<p class="mc-player-empty">加载备份列表失败</p>`;
-        return;
-      }
-      if (!data.backups || data.backups.length === 0) {
-        container.innerHTML = `<p class="mc-player-empty">暂无备份文件</p>`;
-        return;
-      }
-      const items = data.backups.map(b => {
-        const date = new Date(b.mtime).toLocaleString();
-        return `<div class="mc-player-item"><span>${b.name} <small style="color:var(--gray);">${date} · ${Math.round(b.size/1024)} KB</small></span><div style="display:flex;gap:0.5rem;"><button class="btn btn-sm btn-success" onclick="downloadMcBackup('${b.name}')"><i class="fas fa-download"></i> 下载</button><button class="btn btn-sm btn-secondary" onclick="confirmRestoreMcBackup('${b.name}')"><i class="fas fa-undo"></i> 还原</button></div></div>`;
-      }).join('');
-      container.innerHTML = `<div>${items}</div>`;
-    } catch (e) {
-      console.error('加载备份失败', e);
-      const container = document.getElementById('mcBackupsList');
-      if (container) container.innerHTML = `<p class="mc-player-empty">加载备份列表失败</p>`;
+// Backups UI
+async function loadMcBackups() {
+  try {
+    await ensureMcServerSelected();
+    const resp = await fetch(mcApi('/backups'));
+    const data = await resp.json();
+    const container = document.getElementById('mcBackupsList');
+    if (!container) return;
+    if (!data.success) {
+      container.innerHTML = `<p class="mc-player-empty">加载备份列表失败</p>`;
+      return;
     }
+    if (!data.backups || data.backups.length === 0) {
+      container.innerHTML = `<p class="mc-player-empty">暂无备份文件</p>`;
+      return;
+    }
+    const items = data.backups.map(b => {
+      const date = new Date(b.mtime).toLocaleString();
+      return `<div class="mc-player-item"><span>${b.name} <small style="color:var(--gray);">${date} · ${Math.round(b.size/1024)} KB</small></span><div style="display:flex;gap:0.5rem;"><button class="btn btn-sm btn-success" onclick="downloadMcBackup('${b.name}')"><i class="fas fa-download"></i> 下载</button><button class="btn btn-sm btn-secondary" onclick="confirmRestoreMcBackup('${b.name}')"><i class="fas fa-undo"></i> 还原</button></div></div>`;
+    }).join('');
+    container.innerHTML = `<div>${items}</div>`;
+  } catch (e) {
+    console.error('加载备份失败', e);
+    const container = document.getElementById('mcBackupsList');
+    if (container) container.innerHTML = `<p class="mc-player-empty">加载备份列表失败</p>`;
   }
+}
 
-  function downloadMcBackup(name) {
-    try {
-      const link = document.createElement('a');
-      link.href = mcApi(`/backups/${encodeURIComponent(name)}/download`);
-      link.download = name;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      showToast('开始下载备份', 'success');
-    } catch (e) {
-      console.error('下载备份失败', e);
-      showToast('下载备份失败', 'error');
-    }
+function downloadMcBackup(name) {
+  try {
+    const link = document.createElement('a');
+    link.href = mcApi(`/backups/${encodeURIComponent(name)}/download`);
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showToast('开始下载备份', 'success');
+  } catch (e) {
+    console.error('下载备份失败', e);
+    showToast('下载备份失败', 'error');
   }
+}
 
-  function confirmRestoreMcBackup(name) {
-    if (typeof showConfirmModal === 'function') {
-      showConfirmModal('确认还原', `确认要从备份 ${name} 还原世界吗？此操作会覆盖当前世界，并在完成后重启服务器。`, () => restoreMcBackup(name));
-    } else if (window.confirm(`确认要从备份 ${name} 还原世界吗？此操作会覆盖当前世界，并在完成后重启服务器。`)) {
-      restoreMcBackup(name);
-    }
+function confirmRestoreMcBackup(name) {
+  if (typeof showConfirmModal === 'function') {
+    showConfirmModal('确认还原', `确认要从备份 ${name} 还原世界吗？此操作会覆盖当前世界，并在完成后重启服务器。`, () => restoreMcBackup(name));
+  } else if (window.confirm(`确认要从备份 ${name} 还原世界吗？此操作会覆盖当前世界，并在完成后重启服务器。`)) {
+    restoreMcBackup(name);
   }
+}
 
-  async function restoreMcBackup(name) {
-    try {
-      await ensureMcServerSelected();
-      const resp = await fetch(mcApi(`/backups/${encodeURIComponent(name)}/restore`), { method: 'POST' });
-      const data = await resp.json();
-      if (data.success) {
-        showToast('还原已完成，服务器已重启（如果配置）', 'success');
-        setTimeout(() => { loadMcStatus(); }, 2000);
-      } else {
-        showToast(data.error || '还原失败', 'error');
-      }
-    } catch (e) {
-      console.error('还原请求失败', e);
-      showToast('还原请求失败', 'error');
+async function restoreMcBackup(name) {
+  try {
+    await ensureMcServerSelected();
+    const resp = await fetch(mcApi(`/backups/${encodeURIComponent(name)}/restore`), { method: 'POST' });
+    const data = await resp.json();
+    if (data.success) {
+      showToast('还原已完成，服务器已重启（如果配置）', 'success');
+      setTimeout(() => { loadMcStatus(); }, 2000);
+    } else {
+      showToast(data.error || '还原失败', 'error');
     }
+  } catch (e) {
+    console.error('还原请求失败', e);
+    showToast('还原请求失败', 'error');
   }
+}
 
-  async function createMcBackup() {
-    try {
-      await ensureMcServerSelected();
-      const resp = await fetch(mcApi('/backup'), { method: 'POST' });
-      const data = await resp.json();
-      if (data.success) {
-        showToast('备份已创建: ' + data.name, 'success');
-        setTimeout(loadMcBackups, 800);
-      } else {
-        showToast(data.error || '创建备份失败', 'error');
-      }
-    } catch (e) {
-      console.error('创建备份失败', e);
-      showToast('创建备份失败', 'error');
+async function createMcBackup() {
+  try {
+    await ensureMcServerSelected();
+    const resp = await fetch(mcApi('/backup'), { method: 'POST' });
+    const data = await resp.json();
+    if (data.success) {
+      showToast('备份已创建: ' + data.name, 'success');
+      setTimeout(loadMcBackups, 800);
+    } else {
+      showToast(data.error || '创建备份失败', 'error');
     }
+  } catch (e) {
+    console.error('创建备份失败', e);
+    showToast('创建备份失败', 'error');
   }
+}
 
 function highlightConsoleLine(htmlLine, keyword) {
   if (!keyword) return htmlLine;
@@ -354,14 +352,13 @@ function renderMcConsole() {
     });
 
     const levelColorMap = {
-        info: '#10b981',   // 绿色
-        warn: '#f59e0b',   // 橙色
-        error: '#ef4444'   // 红色
+        info: '#10b981',
+        warn: '#f59e0b',
+        error: '#ef4444'
     };
 
     output.innerHTML = lines.map((entry) => {
         let text = escapeHtml(entry.text);
-        // 匹配独立的 INFO、WARN、ERROR（不区分大小写，使用单词边界）
         text = text.replace(/\b(INFO|WARN|ERROR)\b/gi, (match) => {
             const lower = match.toLowerCase();
             const color = levelColorMap[lower];
@@ -492,7 +489,7 @@ function updateCommandPreview() {
     if (args) cmd += ` ${args}`;
     cmd += ` -jar ${jar} nogui`;
     const preview = document.getElementById('mcConfigCommandPreview');
-    if (preview) preview.value = cmd;   // textarea 也支持 .value
+    if (preview) preview.value = cmd;
 }
 
 function getMcStatsTimeWindowMs() {
@@ -729,14 +726,11 @@ async function loadMcConfig() {
         }
         const cfg = data.config;
 
-        // 分解字段
         document.getElementById('mcJavaPath').value = cfg.javaPath || 'java';
         document.getElementById('mcMinMemory').value = cfg.minMemory || '1024M';
         document.getElementById('mcMaxMemory').value = cfg.maxMemory || '4096M';
         document.getElementById('mcJarPath').value = cfg.jarPath || 'server.jar';
         document.getElementById('mcAdditionalArgs').value = cfg.additionalArgs || '';
-
-        // 其他配置
         document.getElementById('mcConfigDir').value = cfg.workingDir || '';
         const autoRestartCheckbox = document.getElementById('mcAutoRestartInput');
         if (autoRestartCheckbox) autoRestartCheckbox.checked = !!cfg.autoRestart;
@@ -796,10 +790,8 @@ async function loadMcConfig() {
             });
         }
 
-        // 更新命令预览
         updateCommandPreview();
 
-        // 兼容旧配置：如果只有 fullCommand 而没有分解字段，给个提示
         if (cfg.fullCommand && !cfg.javaPath && !cfg.jarPath) {
             showToast('检测到旧版完整命令配置，请重新填写分解字段并保存', 'warning');
         }
@@ -839,14 +831,13 @@ async function saveMcConfig() {
     const statsIntervalSeconds = statsIntervalValue != null && statsIntervalValue > 0 ? statsIntervalValue : refreshValues.statsIntervalSeconds;
     const tpsIntervalSeconds = tpsIntervalValue != null && tpsIntervalValue > 0 ? tpsIntervalValue : refreshValues.tpsIntervalSeconds;
 
-    // 构建配置对象（不使用 fullCommand）
     const configPayload = {
         javaPath,
         minMemory,
         maxMemory,
         jarPath,
         additionalArgs,
-        fullCommand: '',          // 清空完整命令，让服务端使用分解字段
+        fullCommand: '',
         workingDir,
         backupDir,
         autoBackupEnabled,
@@ -870,7 +861,6 @@ async function saveMcConfig() {
         const data = await response.json();
         if (data.success) {
             showToast('MC 配置已保存', 'success');
-            // 重新加载配置以同步
             await loadMcConfig();
             updateMcAutoRestartDisplay(autoRestart);
         } else {
@@ -913,7 +903,6 @@ async function syncMcStatus() {
     if (data.success) {
       showToast(data.message || '已同步服务器状态', 'success');
       await loadMcStatus();
-      // reload logs and players to reflect possible recovered state
       loadMcLogs();
       loadMcPlayers();
     } else {
@@ -926,7 +915,6 @@ async function syncMcStatus() {
   }
 }
 
-// Attach sync button if present in DOM
 const mcSyncBtn = document.getElementById('mcSyncBtn');
 if (mcSyncBtn) {
   mcSyncBtn.addEventListener('click', (e) => {
@@ -1003,7 +991,6 @@ async function startMinecraftServer() {
 async function stopMinecraftServer() {
   try {
     await ensureMcServerSelected();
-    // 检查当前状态，若为恢复（只读）态，则提示用户选择强制终止
     const st = await fetch(mcApi('/status'));
     const stData = await st.json();
     if (stData.running && stData.recovered) {
@@ -1066,7 +1053,6 @@ async function sendMcCommand(commandInput) {
   }
   try {
     await ensureMcServerSelected();
-    // 若服务器处于恢复（只读）态，禁止发送命令
     try {
       const st = await fetch(mcApi('/status'));
       const stData = await st.json();
@@ -1253,25 +1239,42 @@ function confirmDeleteMcServer() {
 }
 
 loadCommandHistory();
-loadMcServers();
 
-// 初始化过滤器输入值（如果 DOM 已经存在）
-try {
-  const f = document.getElementById('mcConsoleFilter');
-  if (f) {
-    f.value = mcConsoleFilterText || '';
-  }
-} catch (e) {
-  // ignore
-}
-
-// 监听分解字段输入，实时更新命令预览
 document.addEventListener('DOMContentLoaded', () => {
     const previewFields = ['mcJavaPath', 'mcMinMemory', 'mcMaxMemory', 'mcJarPath', 'mcAdditionalArgs'];
     previewFields.forEach(id => {
         const el = document.getElementById(id);
         if (el) el.addEventListener('input', updateCommandPreview);
     });
-    // 若页面已加载但尚未触发（例如通过动态切换页面），手动调用一次
     updateCommandPreview();
 });
+
+// 暴露给全局
+window.loadMcServers = loadMcServers;
+window.switchMcServer = switchMcServer;
+window.createMcServer = createMcServer;
+window.confirmDeleteMcServer = confirmDeleteMcServer;
+window.startMinecraftServer = startMinecraftServer;
+window.stopMinecraftServer = stopMinecraftServer;
+window.killMinecraftServer = killMinecraftServer;
+window.sendMcCommand = sendMcCommand;
+window.downloadMcLog = downloadMcLog;
+window.loadMcConfig = loadMcConfig;
+window.saveMcConfig = saveMcConfig;
+window.loadMcStatus = loadMcStatus;
+window.loadMcLogs = loadMcLogs;
+window.loadMcPlayers = loadMcPlayers;
+window.refreshMcPlayerList = refreshMcPlayerList;
+window.clearMcConsole = clearMcConsole;
+window.toggleMcAutoScroll = toggleMcAutoScroll;
+window.setMcStatsRange = setMcStatsRange;
+window.initMcStatsChart = initMcStatsChart;
+window.updateMcStatsChart = updateMcStatsChart;
+window.appendMcLog = appendMcLog;
+window.renderPlayerList = renderPlayerList;
+window.updateMcStats = updateMcStats;
+window.createMcBackup = createMcBackup;
+window.loadMcBackups = loadMcBackups;
+window.downloadMcBackup = downloadMcBackup;
+window.confirmRestoreMcBackup = confirmRestoreMcBackup;
+window.restoreMcBackup = restoreMcBackup;
