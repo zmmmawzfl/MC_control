@@ -112,7 +112,7 @@ const loginLimiter = rateLimit({
 // ========== 认证中间件（静态资源放行） ==========
 function authMiddleware(req, res, next) {
   // 公开路径：登录页面、登录API
-  if (req.path === '/login.html' || req.path === '/api/login') {
+  if (req.path === '/login.html' || req.path === '/api/login' || req.path === '/api/logout') {
     return next();
   }
   // 静态资源扩展名直接放行（不要求认证）
@@ -134,11 +134,11 @@ function authMiddleware(req, res, next) {
 app.use(authMiddleware);
 
 // ========== 静态文件服务（在认证之后，但认证中间件已放行静态资源） ==========
-app.use(express.static(__dirname));
+app.use(express.static(path.join(__dirname, 'public')));
 
 // ========== 登录路由 ==========
 app.get('/login.html', (req, res) => {
-  res.sendFile(path.join(__dirname, 'login.html'));
+  res.sendFile(path.join(__dirname, 'public', 'login.html'));
 });
 
 app.post('/api/login', loginLimiter, async (req, res) => {
@@ -173,15 +173,7 @@ const mcManager = new McServerManager(pool, __dirname, (event, serverId, payload
   });
 });
 
-// ========== MC 路由 ==========
-const mcRouter = createMcControlRouter(mcManager, logger, {
-  asyncHandler: (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next),
-  fs,
-  path,
-});
-app.use('/api/mc/:id', mcRouter);
-
-// 服务器列表管理
+// ========== 【重要】先定义具体的 /api/mc/servers 路由，再挂载通配路由器 ==========
 app.get('/api/mc/servers', async (req, res) => {
   try {
     const list = mcManager.getAllServersInfo();
@@ -216,6 +208,14 @@ app.delete('/api/mc/servers/:id', async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
+
+// ========== MC 通配路由（必须放在最后） ==========
+const mcRouter = createMcControlRouter(mcManager, logger, {
+  asyncHandler: (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next),
+  fs,
+  path,
+});
+app.use('/api/mc/:id', mcRouter);
 
 // ========== WebSocket 服务（仅 MC 订阅） ==========
 const server = http.createServer(app);
