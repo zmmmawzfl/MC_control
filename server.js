@@ -26,16 +26,41 @@ if (!AUTH_CONFIG.password || !AUTH_CONFIG.secret) {
   process.exit(1);
 }
 
-// ========== 数据库连接池（仅 mc_servers 表） ==========
-const pool = mysql.createPool({
-  host: process.env.DB_HOST || 'localhost',
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
+// ========== 数据库连接配置 ==========
+const DB_HOST = process.env.DB_HOST || 'localhost';
+const DB_PORT = parseInt(process.env.DB_PORT, 10) || 3306;
+const DB_USER = process.env.DB_USER;
+const DB_PASSWORD = process.env.DB_PASSWORD;
+const DB_NAME = process.env.DB_NAME || 'mc_servers';
+
+if (!DB_USER || !DB_PASSWORD) {
+  console.error('请设置 DB_USER 和 DB_PASSWORD 环境变量');
+  process.exit(1);
+}
+
+const dbConfig = {
+  host: DB_HOST,
+  port: DB_PORT,
+  user: DB_USER,
+  password: DB_PASSWORD,
   waitForConnections: true,
   connectionLimit: 10,
   charset: 'utf8mb4',
-});
+};
+
+let pool;
+
+async function ensureDatabaseExists() {
+  const connection = await mysql.createConnection({
+    host: DB_HOST,
+    port: DB_PORT,
+    user: DB_USER,
+    password: DB_PASSWORD,
+    charset: 'utf8mb4',
+  });
+  await connection.query(`CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
+  await connection.end();
+}
 
 // ========== 日志系统（轻量） ==========
 const logDir = './logs';
@@ -163,7 +188,7 @@ app.get('/logout', (req, res) => {
 
 // ========== MC 管理器 ==========
 let wss;
-const mcManager = new McServerManager(pool, __dirname, (event, serverId, payload) => {
+const mcManager = new McServerManager(null, __dirname, (event, serverId, payload) => {
   if (!wss) return;
   const message = JSON.stringify({ type: event, serverId, ...payload });
   wss.clients.forEach((ws) => {
@@ -258,7 +283,14 @@ wss.on('connection', (ws) => {
 // ========== 启动服务 ==========
 async function start() {
   try {
-    // 确保 mc_servers 表存在
+    await ensureDatabaseExists();
+
+    pool = mysql.createPool({
+      ...dbConfig,
+      database: DB_NAME,
+    });
+    mcManager.dbPool = pool;
+
     await pool.execute(`
       CREATE TABLE IF NOT EXISTS mc_servers (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
