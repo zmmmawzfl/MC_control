@@ -2,7 +2,8 @@
   "name": "mc-standalone",
   "version": "1.0.0",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "lint": "eslint --ext .js ."
   },
   "dependencies": {
     "archiver": "^6.0.1",
@@ -20,5 +21,8 @@
     "winston": "^3.11.0",
     "winston-daily-rotate-file": "^4.7.1",
     "ws": "^8.14.2"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.1"
   }
 }

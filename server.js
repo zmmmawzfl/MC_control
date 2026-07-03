@@ -245,6 +245,11 @@ app.use('/api/mc/:id', mcRouter);
 // ========== WebSocket 服务（仅 MC 订阅） ==========
 const server = http.createServer(app);
 wss = new WebSocket.Server({ server });
+// 处理 WebSocket 服务器层面的错误，避免未捕获异常
+wss.on('error', (err) => {
+  logger.error('WebSocket Server error:', err);
+  process.exit(1);
+});
 wss.on('connection', (ws) => {
   ws.mcSubscriptions = new Set();
   ws.subscribedMcPlayers = false;
@@ -303,6 +308,11 @@ async function start() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
     await mcManager.loadFromDatabase();
+    server.on('error', (err) => {
+      logger.error('HTTP Server error:', err);
+      // 若端口被占用或其他监听错误，优雅退出
+      process.exit(1);
+    });
     server.listen(PORT, () => {
       logger.info(`MC Service running on http://localhost:${PORT}`);
       logger.info(`Login: http://localhost:${PORT}/login.html`);
