@@ -9,6 +9,12 @@ const pidusage = require('pidusage');
 const pLimit = require('p-limit');
 const childProcessLimit = pLimit(5);
 
+const ANSI_ESCAPE_CHAR = String.fromCharCode(0x1b);
+const ANSI_CSI_CHAR = String.fromCharCode(0x9b);
+function getAnsiEscapeRegExp(suffix) {
+  return new RegExp(`[${ANSI_ESCAPE_CHAR}${ANSI_CSI_CHAR}]\\[[0-9;]*${suffix}`, 'g');
+}
+
 const PIDUSAGE_CONCURRENCY = Number(process.env.PIDUSAGE_CONCURRENCY) || 3;
 const pidusageLimit = pLimit(PIDUSAGE_CONCURRENCY);
 
@@ -39,8 +45,6 @@ try {
 const LOG_MAX_LINES = 2000;
 const PLAYER_COUNT_REGEX = /There are\s+(\d+)\s+of\s+a\s+max\s+of\s+(\d+)\s+players\s+online/i;
 const PLAYER_LIST_REGEX = /^(?:\[.*?\]\s*)?\[?\s*([^\]]*?)\s*\]?$/;
-const TPS_REGEX = /TPS\s+from\s+last\s+.*?:\s*([\d.]+)/i;
-
 class McServer {
   constructor(id, config = {}, baseDir = process.cwd(), eventCallback = null) {
     this.id = String(id || 'default');
@@ -452,16 +456,47 @@ class McServer {
     return args;
   }
 
+  isCronFieldValid(field, min, max) {
+    if (!field || typeof field !== 'string') return false;
+    if (field === '*') return true;
+    const parts = String(field).split(',').map((item) => item.trim()).filter(Boolean);
+    if (parts.length === 0) return false;
+
+    for (const part of parts) {
+      if (part === '*') continue;
+      if (part.includes('/')) {
+        const [range, step] = part.split('/').map((item) => item.trim());
+        const interval = Number(step);
+        if (!Number.isFinite(interval) || interval <= 0) return false;
+        if (range === '*' || range === '') continue;
+        if (range.includes('-')) {
+          const [start, end] = range.split('-').map((item) => Number(item));
+          if (!Number.isFinite(start) || !Number.isFinite(end) || start < min || end > max || start > end) return false;
+          continue;
+        }
+        const value = Number(range);
+        if (!Number.isFinite(value) || value < min || value > max) return false;
+        continue;
+      }
+      if (part.includes('-')) {
+        const [start, end] = part.split('-').map((item) => Number(item));
+        if (!Number.isFinite(start) || !Number.isFinite(end) || start < min || end > max || start > end) return false;
+        continue;
+      }
+      const value = Number(part);
+      if (!Number.isFinite(value) || value < min || value > max) return false;
+    }
+    return true;
+  }
+
   isCronExpressionValid(expression) {
     const parts = String(expression || '').trim().split(/\s+/);
     if (parts.length !== 5) return false;
-    return [
-      this.parseCronField(parts[0], new Date().getMinutes(), 0, 59),
-      this.parseCronField(parts[1], new Date().getHours(), 0, 23),
-      this.parseCronField(parts[2], new Date().getDate(), 1, 31),
-      this.parseCronField(parts[3], new Date().getMonth() + 1, 1, 12),
-      this.parseCronField(parts[4], new Date().getDay(), 0, 6)
-    ].every(Boolean);
+    return this.isCronFieldValid(parts[0], 0, 59)
+      && this.isCronFieldValid(parts[1], 0, 23)
+      && this.isCronFieldValid(parts[2], 1, 31)
+      && this.isCronFieldValid(parts[3], 1, 12)
+      && this.isCronFieldValid(parts[4], 0, 6);
   }
 
   resetRestartAttemptsAfterStableRun() {
@@ -549,7 +584,7 @@ class McServer {
     if (!normalized) return;
 
     // 过滤 TPS 自动轮询行（不记录日志，只解析数值）
-    const cleanForFilter = normalized.replace(/\u001b\[[0-9;]*m/g, '');
+    const cleanForFilter = normalized.replace(getAnsiEscapeRegExp('m'), '');
     if (cleanForFilter.includes('TPS from last')) {
       this.updateTpsFromLine(normalized);
       return;
@@ -659,7 +694,7 @@ class McServer {
   }
 
   updateTpsFromLine(line) {
-    const cleanLine = String(line || '').replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+    const cleanLine = String(line || '').replace(getAnsiEscapeRegExp('[a-zA-Z]'), '');
     const patterns = [
       /TPS from last 1m, 5m, 15m:\s*([\d.]+),\s*([\d.]+),\s*([\d.]+)/i,
       /TPS from last 1m:\s*([\d.]+)/i,
@@ -949,7 +984,7 @@ class McServer {
     const cwd = this.resolveWorkingDir();
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const idPart = (this.config && this.config.name) ? String(this.config.name).replace(/[^a-zA-Z0-9-_]/g, '_') : this.id;
-    const filename = process.platform === 'win32' ? `backup-${idPart}-${timestamp}.zip` : `backup-${idPart}-${timestamp}.tar.gz`;
+    const filename = `backup-${idPart}-${timestamp}.zip`;
     const dest = path.join(backupDir, filename);
     const worldDirs = ['world', 'world_nether', 'world_the_end']
       .map((dir) => path.join(cwd, dir))
@@ -968,7 +1003,7 @@ class McServer {
     const backupDir = this.resolveBackupDir();
     if (!fs.existsSync(backupDir)) return [];
     return fs.readdirSync(backupDir)
-      .filter((name) => name.endsWith('.zip') || name.endsWith('.tar.gz'))
+      .filter((name) => name.endsWith('.zip'))
       .map((name) => {
         const filePath = path.join(backupDir, name);
         const st = fs.statSync(filePath);
@@ -1106,7 +1141,7 @@ class McServer {
     try {
       const backupDir = this.resolveBackupDir();
       this.ensureDir(backupDir);
-      const files = fs.readdirSync(backupDir).filter((name) => /\.(tar\.gz|zip)$/i.test(name));
+      const files = fs.readdirSync(backupDir).filter((name) => /\.zip$/i.test(name));
       let list = files.map((name) => {
         const filePath = path.join(backupDir, name);
         const st = fs.statSync(filePath);
@@ -1118,7 +1153,7 @@ class McServer {
         const cutoff = now - this.config.backupRetentionDays * 24 * 60 * 60 * 1000;
         for (const item of list) {
           if (item.mtime < cutoff) {
-            try { fs.unlinkSync(item.path); } catch (e) { }
+            try { fs.unlinkSync(item.path); } catch (e) { /* ignore cleanup error */ }
           }
         }
         // 重新读取列表，避免后续按数量删除时依据过期前的静态列表误删
@@ -1132,7 +1167,7 @@ class McServer {
 
       if (Number.isFinite(this.config.backupRetentionCount) && this.config.backupRetentionCount > 0) {
         list.slice(this.config.backupRetentionCount).forEach((item) => {
-          try { fs.unlinkSync(item.path); } catch (e) { }
+          try { fs.unlinkSync(item.path); } catch (e) { /* ignore cleanup error */ }
         });
       }
     } catch (e) {
@@ -1435,11 +1470,7 @@ class McServerManager {
 
     if (updates.length > 0 && this.dbPool) {
       params.push(id);
-      try {
-        await this.dbPool.execute(`UPDATE mc_servers SET ${updates.join(', ')} WHERE id = ?`, params);
-      } catch (e) {
-        throw e;
-      }
+      await this.dbPool.execute(`UPDATE mc_servers SET ${updates.join(', ')} WHERE id = ?`, params);
     }
 
     return server;
@@ -1449,7 +1480,7 @@ class McServerManager {
     const sid = String(id);
     const srv = this.servers.get(sid);
     if (srv && srv.process) {
-      try { srv.kill(); } catch (e) { }
+      try { srv.kill(); } catch (e) { /* ignore kill errors */ }
     }
     if (this.dbPool) {
       await this.dbPool.execute('DELETE FROM mc_servers WHERE id = ?', [id]);
@@ -1460,13 +1491,13 @@ class McServerManager {
         const logDir = srv.logDir || path.join(this.baseDir, 'logs', 'mc', sid);
         const workDir = srv.resolveWorkingDir ? srv.resolveWorkingDir() : null;
         if (backupDir && fs.existsSync(backupDir)) {
-          try { fs.rmSync(backupDir, { recursive: true, force: true }); } catch (e) { }
+          try { fs.rmSync(backupDir, { recursive: true, force: true }); } catch (e) { /* ignore cleanup error */ }
         }
         if (logDir && fs.existsSync(logDir)) {
-          try { fs.rmSync(logDir, { recursive: true, force: true }); } catch (e) { }
+          try { fs.rmSync(logDir, { recursive: true, force: true }); } catch (e) { /* ignore cleanup error */ }
         }
         if (workDir && path.resolve(workDir).startsWith(path.resolve(this.baseDir))) {
-          try { fs.rmSync(workDir, { recursive: true, force: true }); } catch (e) { }
+          try { fs.rmSync(workDir, { recursive: true, force: true }); } catch (e) { /* ignore cleanup error */ }
         }
       } catch (e) {
         // ignore file deletion errors
@@ -1481,7 +1512,6 @@ class McServerManager {
 function createMcControlRouter(mcManager, logger, options = {}) {
   const router = express.Router({ mergeParams: true });
   const fsImpl = options.fs || fs;
-  const pathImpl = options.path || path;
   const asyncHandler = options.asyncHandler || ((fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next));
 
   function ensureMcServer(req, res, next) {

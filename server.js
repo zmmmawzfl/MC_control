@@ -188,12 +188,42 @@ app.get('/logout', (req, res) => {
 
 // ========== MC 管理器 ==========
 let wss;
+function handleStartupError(err) {
+  if (!err) return;
+  if (err.code === 'EADDRINUSE') {
+    logger.error(`端口 ${PORT} 被占用，请停止占用该端口或修改 .env 中的 PORT`, err);
+  } else {
+    logger.error('HTTP Server error:', err);
+  }
+  process.exit(1);
+}
+
+process.on('unhandledRejection', (reason) => {
+  logger.error('Unhandled Rejection:', { reason });
+});
+process.on('uncaughtException', (err) => {
+  logger.error('Uncaught Exception:', err);
+  process.exit(1);
+});
+
 const mcManager = new McServerManager(null, __dirname, (event, serverId, payload) => {
   if (!wss) return;
   const message = JSON.stringify({ type: event, serverId, ...payload });
   wss.clients.forEach((ws) => {
-    if (ws.readyState === WebSocket.OPEN) {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    const hasWildcard = ws.mcSubscriptions && ws.mcSubscriptions.has('*');
+    const subscribedToServer = ws.mcSubscriptions && ws.mcSubscriptions.has(String(serverId));
+    const serverMatch = hasWildcard || subscribedToServer;
+
+    if (event === 'mc_log' && !serverMatch) return;
+    if (event === 'mc_players' && !ws.subscribedMcPlayers) return;
+    if (event === 'mc_stats' && !ws.subscribedMcStats) return;
+    if ((event === 'mc_players' || event === 'mc_stats') && !serverMatch) return;
+
+    try {
       ws.send(message);
+    } catch (err) {
+      // ignore send failures for disconnected clients
     }
   });
 });
@@ -281,7 +311,9 @@ wss.on('connection', (ws) => {
         default:
           break;
       }
-    } catch (e) {}
+    } catch (e) {
+      // ignore malformed websocket payloads
+    }
   });
 });
 
@@ -308,11 +340,7 @@ async function start() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
     await mcManager.loadFromDatabase();
-    server.on('error', (err) => {
-      logger.error('HTTP Server error:', err);
-      // 若端口被占用或其他监听错误，优雅退出
-      process.exit(1);
-    });
+    server.on('error', handleStartupError);
     server.listen(PORT, () => {
       logger.info(`MC Service running on http://localhost:${PORT}`);
       logger.info(`Login: http://localhost:${PORT}/login.html`);

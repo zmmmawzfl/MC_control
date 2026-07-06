@@ -1,4 +1,7 @@
-let mcRefreshTimer = null;
+/* global showToast, showConfirmModal, ws, Chart */
+/* exported confirmMcPlayerAction */
+const ANSI_ESCAPE_CHAR = String.fromCharCode(0x1b);
+const ANSI_CSI_CHAR = String.fromCharCode(0x9b);
 const COMMAND_HISTORY_KEY = 'mcCommandHistory';
 const COMMAND_HISTORY_MAX = 50;
 const commandHistory = [];
@@ -65,12 +68,6 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
-function stripMcColorCodes(text) {
-  return String(text || '')
-    .replace(/\u001b\[[0-9;]*m/g, '')
-    .replace(/§[0-9A-FK-OR]/gi, '');
-}
-
 function classifyMcLogLevel(text) {
   const upper = String(text || '').toUpperCase();
   if (upper.includes('[SEVERE]') || upper.includes('[ERROR]') || upper.includes('[STDERR]')) {
@@ -83,13 +80,6 @@ function classifyMcLogLevel(text) {
     return 'info';
   }
   return 'info';
-}
-
-function getMcLogStyle(level) {
-  if (level === 'error') return 'color: #ef4444;';
-  if (level === 'warn') return 'color: #f59e0b;';
-  if (level === 'info') return 'color: #10b981;';
-  return '';
 }
 
 function formatMcColorCodes(text) {
@@ -106,11 +96,11 @@ function formatMcColorCodes(text) {
     94: '#5555FF', 95: '#FF55FF', 96: '#55FFFF', 97: '#FFFFFF'
   };
   const highlightLevels = {
-    '\[INFO\]': 'color: #3b82f6; font-weight: 600',
-    '\[WARN\]': 'color: #f59e0b; font-weight: 600',
-    '\[ERROR\]': 'color: #ef4444; font-weight: 600',
-    '\[SEVERE\]': 'color: #ef4444; font-weight: 600',
-    '\[DEBUG\]': 'color: #6b7280; font-weight: 600'
+    '\\[INFO\\]': 'color: #3b82f6; font-weight: 600',
+    '\\[WARN\\]': 'color: #f59e0b; font-weight: 600',
+    '\\[ERROR\\]': 'color: #ef4444; font-weight: 600',
+    '\\[SEVERE\\]': 'color: #ef4444; font-weight: 600',
+    '\\[DEBUG\\]': 'color: #6b7280; font-weight: 600'
   };
 
   let html = '';
@@ -123,11 +113,11 @@ function formatMcColorCodes(text) {
     if (currentStyle.underline) styles.push('text-decoration: underline');
     return styles.length ? `<span style="${styles.join('; ')}">` : '<span>';
   };
-  const segments = String(text).split(/(\u001b\[[0-9;]*m|§[0-9A-FK-OR])/gi);
+  const segments = String(text).split(new RegExp(`([${ANSI_ESCAPE_CHAR}${ANSI_CSI_CHAR}]\\[[0-9;]*m|§[0-9A-FK-OR])`, 'gi'));
   let opened = false;
   segments.forEach((segment) => {
     if (!segment) return;
-    const ansiMatch = segment.match(/^\u001b\[([0-9;]*)m$/);
+    const ansiMatch = segment.match(new RegExp(`^[${ANSI_ESCAPE_CHAR}${ANSI_CSI_CHAR}]\\[([0-9;]*)m$`));
     if (ansiMatch) {
       if (opened) html += '</span>';
       const codes = ansiMatch[1].split(';').map(Number).filter((n) => !Number.isNaN(n));
@@ -180,11 +170,6 @@ function formatMcColorCodes(text) {
     html = html.replace(re, (match) => `<span style="${highlightLevels[pattern]}">${match}</span>`);
   });
   return html;
-}
-
-function formatMcLogs(logs) {
-  if (!Array.isArray(logs)) return formatMcColorCodes(logs);
-  return logs.map((line) => formatMcColorCodes(line)).join('<br>');
 }
 
 function persistCommandHistory() {
@@ -335,12 +320,6 @@ async function createMcBackup() {
   }
 }
 
-function highlightConsoleLine(htmlLine, keyword) {
-  if (!keyword) return htmlLine;
-  const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return htmlLine.replace(new RegExp(`(${escapedKeyword})`, 'gi'), '<span style="background: rgba(245, 158, 11, 0.25); color: #fff;">$1</span>');
-}
-
 function renderMcConsole() {
     const output = document.getElementById('mcStdout');
     if (!output) return;
@@ -351,20 +330,9 @@ function renderMcConsole() {
         return entry.text.toLowerCase().includes(filter);
     });
 
-    const levelColorMap = {
-        info: '#10b981',
-        warn: '#f59e0b',
-        error: '#ef4444'
-    };
-
     output.innerHTML = lines.map((entry) => {
-        let text = escapeHtml(entry.text);
-        text = text.replace(/\b(INFO|WARN|ERROR)\b/gi, (match) => {
-            const lower = match.toLowerCase();
-            const color = levelColorMap[lower];
-            return `<span style="color: ${color};">${match}</span>`;
-        });
-        return `<div style="white-space: pre-wrap; word-break: break-word;">${text}</div>`;
+        const content = formatMcColorCodes(entry.text);
+        return `<div style="white-space: pre-wrap; word-break: break-word;">${content}</div>`;
     }).join('');
 
     if (mcAutoScroll) {
@@ -1272,6 +1240,7 @@ window.initMcStatsChart = initMcStatsChart;
 window.updateMcStatsChart = updateMcStatsChart;
 window.appendMcLog = appendMcLog;
 window.renderPlayerList = renderPlayerList;
+window.confirmMcPlayerAction = confirmMcPlayerAction;
 window.updateMcStats = updateMcStats;
 window.createMcBackup = createMcBackup;
 window.loadMcBackups = loadMcBackups;

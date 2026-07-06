@@ -92,6 +92,8 @@ async function checkAuth() {
     }
 }
 
+/* global appendMcLog, renderPlayerList, updateMcStats, loadMcStatus, loadMcConfig, initMcStatsChart, updateMcStatsChart, loadMcLogs, loadMcPlayers, refreshMcPlayerList, loadMcServers */
+
 // ========== WebSocket ==========
 let ws = null;
 let reconnectTimer = null;
