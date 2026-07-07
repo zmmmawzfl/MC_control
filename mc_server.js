@@ -18,6 +18,14 @@ function getAnsiEscapeRegExp(suffix) {
 const PIDUSAGE_CONCURRENCY = Number(process.env.PIDUSAGE_CONCURRENCY) || 3;
 const pidusageLimit = pLimit(PIDUSAGE_CONCURRENCY);
 
+const DEFAULT_PLAYER_LIST_INTERVAL_SECONDS = Number(process.env.MC_PLAYER_LIST_INTERVAL_SECONDS) || 10;
+const DEFAULT_TPS_INTERVAL_SECONDS = Number(process.env.MC_TPS_INTERVAL_SECONDS) || 10;
+const DEFAULT_STATS_INTERVAL_SECONDS = Number(process.env.MC_STATS_INTERVAL_SECONDS) || 30;
+const STATS_POLL_INITIAL_DELAY_MS = Number(process.env.MC_STATS_POLL_INITIAL_DELAY_MS) || 1000;
+const STATS_POLL_INTERVAL_FLOOR_MS = Number(process.env.MC_STATS_POLL_INTERVAL_FLOOR_MS) || 3000;
+const MC_LOG_FLUSH_INTERVAL_MS = Number(process.env.MC_LOG_FLUSH_INTERVAL_MS) || 4000;
+const MC_LOG_FLUSH_THRESHOLD = Number(process.env.MC_LOG_FLUSH_THRESHOLD) || 100;
+
 // 阈值：CPU% 与 内存变动小于阈值将不会触发更新，减少网络与处理开销
 const MC_STATS_CPU_THRESHOLD = Number(process.env.MC_STATS_CPU_THRESHOLD) || 0.5; // 百分比
 const MC_STATS_MEM_THRESHOLD = Number(process.env.MC_STATS_MEM_THRESHOLD) || 1024 * 1024; // 字节
@@ -68,9 +76,9 @@ class McServer {
       autoRestart: false,
       autoRestartDelaySeconds: 5,
       autoRestartMaxRetries: 3,
-      playerListIntervalSeconds: 5,
-      tpsIntervalSeconds: 5,
-      statsIntervalSeconds: 15
+      playerListIntervalSeconds: DEFAULT_PLAYER_LIST_INTERVAL_SECONDS,
+      tpsIntervalSeconds: DEFAULT_TPS_INTERVAL_SECONDS,
+      statsIntervalSeconds: DEFAULT_STATS_INTERVAL_SECONDS
     }, config || {});
 
     this.logs = [];
@@ -89,6 +97,10 @@ class McServer {
     this.lastCpuPid = null;
     this._statsPending = false;
     this._lastStatsEmitTime = 0;
+    this._statsPollTimer = null;
+    this._tpsPollTimer = null;
+    this._lastStatsProbeAt = 0;
+    this._lastTpsProbeAt = 0;
     this.autoBackupTimer = null;
     this.lastAutoBackupKey = null;
     this.backupInProgress = false;
@@ -123,9 +135,9 @@ class McServer {
 
   getDefaultPollingConfig() {
     return {
-      playerListIntervalSeconds: 5,
-      tpsIntervalSeconds: 5,
-      statsIntervalSeconds: 15
+      playerListIntervalSeconds: DEFAULT_PLAYER_LIST_INTERVAL_SECONDS,
+      tpsIntervalSeconds: DEFAULT_TPS_INTERVAL_SECONDS,
+      statsIntervalSeconds: DEFAULT_STATS_INTERVAL_SECONDS
     };
   }
 
@@ -146,9 +158,9 @@ class McServer {
 
   getRefreshPresetMap() {
     return {
-      fast: { playerListIntervalSeconds: 1, statsIntervalSeconds: 5, tpsIntervalSeconds: 1 },
-      standard: { playerListIntervalSeconds: 5, statsIntervalSeconds: 15, tpsIntervalSeconds: 5 },
-      slow: { playerListIntervalSeconds: 15, statsIntervalSeconds: 30, tpsIntervalSeconds: 15 }
+      fast: { playerListIntervalSeconds: 1, statsIntervalSeconds: 10, tpsIntervalSeconds: 3 },
+      standard: { playerListIntervalSeconds: 5, statsIntervalSeconds: 30, tpsIntervalSeconds: 10 },
+      slow: { playerListIntervalSeconds: 10, statsIntervalSeconds: 60, tpsIntervalSeconds: 20 }
     };
   }
 
@@ -324,17 +336,28 @@ class McServer {
     this.stopTpsPolling();
     const intervalSeconds = Number(this.config.tpsIntervalSeconds) || 0;
     if (!intervalSeconds || !this.process || this.process.recovered || !this.process.stdin || this.process.stdin.destroyed) return;
-    this.tpsTimer = setInterval(() => {
-      if (this.process && !this.process.recovered && this.process.stdin && !this.process.stdin.destroyed) {
-        this.sendCommand('tps', true);
+
+    const intervalMs = Math.max(3000, intervalSeconds * 1000);
+    const tick = () => {
+      this._tpsPollTimer = null;
+      if (!this.process || this.process.recovered || !this.process.stdin || this.process.stdin.destroyed) return;
+      const now = Date.now();
+      if (now - this._lastTpsProbeAt < intervalMs) {
+        this._tpsPollTimer = setTimeout(tick, Math.max(1000, intervalMs - (now - this._lastTpsProbeAt)));
+        return;
       }
-    }, intervalSeconds * 1000);
+      this._lastTpsProbeAt = now;
+      this.sendCommand('tps', true);
+      this._tpsPollTimer = setTimeout(tick, intervalMs);
+    };
+
+    this._tpsPollTimer = setTimeout(tick, Math.max(1000, intervalMs));
   }
 
   stopTpsPolling() {
-    if (this.tpsTimer) {
-      clearInterval(this.tpsTimer);
-      this.tpsTimer = null;
+    if (this._tpsPollTimer) {
+      clearTimeout(this._tpsPollTimer);
+      this._tpsPollTimer = null;
     }
   }
 
@@ -598,8 +621,8 @@ class McServer {
 
       // 写入内存缓冲区（而非直接写文件）
       this.logBuffer.push(formatted + os.EOL);
-      if (this.logBuffer.length >= 50) {
-        this.flushLogBuffer(); // 达到 50 行立即刷新
+      if (this.logBuffer.length >= MC_LOG_FLUSH_THRESHOLD) {
+        this.flushLogBuffer();
       }
 
       // 保留内存日志（最多 2000 行）
@@ -624,10 +647,11 @@ class McServer {
     if (this.logFlushTimer) clearInterval(this.logFlushTimer);
     this.logFlushTimer = setInterval(() => {
       this.flushLogBuffer();
-    }, 2000);
+    }, MC_LOG_FLUSH_INTERVAL_MS);
   }
 
   flushLogBuffer() {
+    if (this.logBuffer.length < MC_LOG_FLUSH_THRESHOLD && this.logBuffer.length > 0 && this.logFlushTimer) return;
     if (this.logBuffer.length === 0) return;
     const chunk = this.logBuffer.join('');
     this.logBuffer = [];
@@ -792,16 +816,24 @@ class McServer {
     if (!this.process || !this.process.pid) return;
     const intervalSeconds = Number(this.config.statsIntervalSeconds) || 0;
     if (!intervalSeconds) return;
+
+    const intervalMs = Math.max(STATS_POLL_INTERVAL_FLOOR_MS, intervalSeconds * 1000);
     const poll = async () => {
-      if (!this.process || !this.process.pid) return;
+      this._statsPollTimer = null;
+      if (!this.process || !this.process.pid || this.process.recovered) return;
+      const now = Date.now();
+      if (now - this._lastStatsProbeAt < intervalMs) {
+        this._statsPollTimer = setTimeout(() => { this._statsPollTimer = null; void poll(); }, Math.max(1000, intervalMs - (now - this._lastStatsProbeAt)));
+        return;
+      }
+      this._lastStatsProbeAt = now;
       const stats = await this.getMcProcessStats(this.process.pid);
       if (stats) {
-        const now = Date.now();
         const oldCpu = typeof this.latestCpu === 'number' ? this.latestCpu : 0;
         const oldMemUsed = (this.latestMemory && this.latestMemory.used) || 0;
         const cpuDiff = Math.abs(stats.cpu - oldCpu);
         const memDiff = Math.abs((stats.memory && stats.memory.used ? stats.memory.used : 0) - oldMemUsed);
-        const forceEmit = !this._lastStatsEmitTime || (now - this._lastStatsEmitTime) > (intervalSeconds * 1000 * 5);
+        const forceEmit = !this._lastStatsEmitTime || (now - this._lastStatsEmitTime) > (intervalMs * 5);
         if (cpuDiff >= MC_STATS_CPU_THRESHOLD || memDiff >= MC_STATS_MEM_THRESHOLD || forceEmit) {
           this.latestCpu = stats.cpu;
           this.latestMemory = stats.memory;
@@ -809,15 +841,16 @@ class McServer {
           this.emit('mc_stats', { cpu: this.latestCpu, memory: this.latestMemory, tps: this.latestTps });
         }
       }
+      this._statsPollTimer = setTimeout(() => { this._statsPollTimer = null; void poll(); }, intervalMs);
     };
-    poll(); // 立即执行一次
-    this.statsTimer = setInterval(poll, intervalSeconds * 1000);
+
+    this._statsPollTimer = setTimeout(() => { this._statsPollTimer = null; void poll(); }, STATS_POLL_INITIAL_DELAY_MS);
   }
 
   stopStatsPolling() {
-    if (this.statsTimer) {
-      clearInterval(this.statsTimer);
-      this.statsTimer = null;
+    if (this._statsPollTimer) {
+      clearTimeout(this._statsPollTimer);
+      this._statsPollTimer = null;
     }
   }
 

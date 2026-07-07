@@ -212,6 +212,16 @@ function addToCommandHistory(command) {
 }
 
 let mcAutoScroll = true;
+let mcLogRenderPending = false;
+
+function scheduleMcConsoleRender() {
+  if (mcLogRenderPending) return;
+  mcLogRenderPending = true;
+  window.requestAnimationFrame(() => {
+    mcLogRenderPending = false;
+    renderMcConsole();
+  });
+}
 
 function appendMcLog(line) {
   let text = '';
@@ -232,7 +242,7 @@ function appendMcLog(line) {
   if (mcLogLines.length > 1000) {
     mcLogLines.shift();
   }
-  renderMcConsole();
+  scheduleMcConsoleRender();
 }
 
 // Backups UI

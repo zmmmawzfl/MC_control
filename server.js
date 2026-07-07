@@ -220,6 +220,17 @@ const mcManager = new McServerManager(null, __dirname, (event, serverId, payload
     if (event === 'mc_stats' && !ws.subscribedMcStats) return;
     if ((event === 'mc_players' || event === 'mc_stats') && !serverMatch) return;
 
+    if (event === 'mc_players') {
+      const key = `${payload.count || 0}:${payload.max || 0}:${(payload.players || []).join('|')}`;
+      if (ws.lastMcPlayersPayload === key) return;
+      ws.lastMcPlayersPayload = key;
+    }
+    if (event === 'mc_stats') {
+      const key = `${payload.cpu ?? ''}:${payload.memory?.used ?? ''}:${payload.memory?.total ?? ''}:${payload.tps ?? ''}`;
+      if (ws.lastMcStatsPayload === key) return;
+      ws.lastMcStatsPayload = key;
+    }
+
     try {
       ws.send(message);
     } catch (err) {
@@ -284,6 +295,8 @@ wss.on('connection', (ws) => {
   ws.mcSubscriptions = new Set();
   ws.subscribedMcPlayers = false;
   ws.subscribedMcStats = false;
+  ws.lastMcPlayersPayload = null;
+  ws.lastMcStatsPayload = null;
 
   ws.on('message', (message) => {
     try {
