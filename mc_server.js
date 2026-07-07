@@ -109,6 +109,9 @@ class McServer {
     this._lastPlayerRefreshAt = 0;
     this._processDiscoveryCache = null;
     this._processDiscoveryCacheExpiresAt = 0;
+    this._processSnapshot = null;
+    this._processSnapshotExpiresAt = 0;
+    this._processSnapshotPromise = null;
     this.logDir = path.join(this.baseDir, 'logs', 'mc', this.id);
     this.logFile = path.join(this.logDir, 'latest.log');
     this.logBuffer = [];
@@ -1228,6 +1231,33 @@ class McServer {
     return null;
   }
 
+  async getProcessSnapshot(forceRefresh = false) {
+    if (!psList) return [];
+    const now = Date.now();
+    if (!forceRefresh && this._processSnapshot && now < this._processSnapshotExpiresAt) {
+      return this._processSnapshot;
+    }
+    if (this._processSnapshotPromise) {
+      return this._processSnapshotPromise;
+    }
+    this._processSnapshotPromise = psList()
+      .then((procs) => {
+        const list = Array.isArray(procs) ? procs : [];
+        this._processSnapshot = list;
+        this._processSnapshotExpiresAt = Date.now() + 2000;
+        return list;
+      })
+      .catch((err) => {
+        this._processSnapshot = [];
+        this._processSnapshotExpiresAt = Date.now() + 1000;
+        throw err;
+      })
+      .finally(() => {
+        this._processSnapshotPromise = null;
+      });
+    return this._processSnapshotPromise;
+  }
+
   async discoverExistingProcess() {
     if (this.process) return this.process;
     const now = Date.now();
@@ -1239,27 +1269,14 @@ class McServer {
     let pid = null;
 
     try {
-      // 优先使用 ps-list 
-      if (psList) {
-        const procs = await psList();
-        for (const p of procs) {
-          const name = String(p.name || '').toLowerCase();
-          const cmd = String(p.cmd || p.cmdline || p.command || '').toLowerCase();
-          if ((name.includes('java') || cmd.includes('java')) && cmd.includes(jarName)) {
-            pid = Number(p.pid);
-            break;
-          }
+      const procs = await this.getProcessSnapshot();
+      for (const p of procs) {
+        const name = String(p.name || '').toLowerCase();
+        const cmd = String(p.cmd || p.cmdline || p.command || '').toLowerCase();
+        if ((name.includes('java') || cmd.includes('java')) && cmd.includes(jarName)) {
+          pid = Number(p.pid);
+          break;
         }
-      } else {
-        // 备选：wmic
-        try {
-          const out = await this.runChildProcess('cmd', ['/c', `wmic process where "Name='java.exe' and CommandLine like '%${jarName}%'" get ProcessId /FORMAT:CSV`], { windowsHide: true });
-          const lines = out.trim().split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-          for (const line of lines) {
-            const m = line.match(/,([0-9]+)$/);
-            if (m) { pid = parseInt(m[1], 10); break; }
-          }
-        } catch (e) { /* ignore */ }
       }
     } catch (e) {
       // ignore
@@ -1267,7 +1284,7 @@ class McServer {
 
     const discovered = pid && !Number.isNaN(pid) && pid > 0 ? { pid, recovered: true } : null;
     this._processDiscoveryCache = discovered;
-    this._processDiscoveryCacheExpiresAt = Date.now() + 30000; // 延长至 30 秒
+    this._processDiscoveryCacheExpiresAt = Date.now() + 5 * 60 * 1000;
 
     if (discovered) {
       this.process = discovered;
@@ -1282,43 +1299,22 @@ class McServer {
   async findJavaSubProcess(parentPid, timeoutMs = 8000) {
     const startTime = Date.now();
     this.pushLog(`开始查找父进程 ${parentPid} 下的 Java 子进程...`);
+
     while (Date.now() - startTime < timeoutMs) {
       try {
-        if (psList) {
-          const procs = await psList();
-          const child = procs.find(p => Number(p.ppid) === Number(parentPid) && (String(p.name || '').toLowerCase().includes('java') || String(p.cmd || p.cmdline || '').toLowerCase().includes('java')));
-          if (child) {
-            const pid = Number(child.pid);
-            this.pushLog(`找到实际 Java 子进程 PID: ${pid} (父进程: ${parentPid})`);
-            return pid;
-          }
-        } else if (process.platform === 'win32') {
-          try {
-            const out = await this.runChildProcess('cmd', ['/c', `wmic process where "ParentProcessId=${parentPid} and Name='java.exe'" get ProcessId /FORMAT:CSV`], { windowsHide: true });
-            const m = out.trim().match(/,([0-9]+)$/m);
-            if (m) {
-              const pid = parseInt(m[1], 10);
-              if (!isNaN(pid) && pid > 0) {
-                this.pushLog(`找到实际 Java 子进程 PID: ${pid} (父进程: ${parentPid})`);
-                return pid;
-              }
-            }
-          } catch (e) { /* ignore */ }
-        } else {
-          try {
-            const out = await this.runChildProcess('sh', ['-c', `ps --no-headers -o pid,ppid,comm,args | awk '$2==${parentPid} && $3 ~ /java/ {print $1; exit}'`], { windowsHide: true });
-            const pid = parseInt(out.trim(), 10);
-            if (!isNaN(pid) && pid > 0) {
-              this.pushLog(`找到实际 Java 子进程 PID: ${pid} (父进程: ${parentPid})`);
-              return pid;
-            }
-          } catch (e) { /* ignore */ }
+        const procs = await this.getProcessSnapshot();
+        const child = procs.find((p) => Number(p.ppid) === Number(parentPid) && (String(p.name || '').toLowerCase().includes('java') || String(p.cmd || p.cmdline || '').toLowerCase().includes('java')));
+        if (child) {
+          const pid = Number(child.pid);
+          this.pushLog(`找到实际 Java 子进程 PID: ${pid} (父进程: ${parentPid})`);
+          return pid;
         }
       } catch (e) {
         // ignore
       }
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise((resolve) => setTimeout(resolve, 1000));
     }
+
     this.pushLog(`警告：未能在 ${timeoutMs}ms 内找到 Java 子进程，将保持原有 PID (${parentPid})`);
     return null;
   }

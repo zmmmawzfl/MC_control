@@ -197,7 +197,6 @@ function handleStartupError(err) {
   }
   process.exit(1);
 }
-
 process.on('unhandledRejection', (reason) => {
   logger.error('Unhandled Rejection:', { reason });
 });
