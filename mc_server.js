@@ -32,7 +32,6 @@ const MC_STATS_MEM_THRESHOLD = Number(process.env.MC_STATS_MEM_THRESHOLD) || 102
 
 let archiver = null;
 let extractZip = null;
-let psList = null;
 try {
   archiver = require('archiver');
 } catch (e) {
@@ -42,11 +41,6 @@ try {
   extractZip = require('extract-zip');
 } catch (e) {
   extractZip = null;
-}
-try {
-  psList = require('ps-list');
-} catch (e) {
-  psList = null;
 }
 
 
@@ -109,9 +103,9 @@ class McServer {
     this._lastPlayerRefreshAt = 0;
     this._processDiscoveryCache = null;
     this._processDiscoveryCacheExpiresAt = 0;
-    this._processSnapshot = null;
-    this._processSnapshotExpiresAt = 0;
-    this._processSnapshotPromise = null;
+    this._managedProcessHandle = null;
+    this._managedProcessPid = null;
+    this._managedProcessState = 'idle';
     this.logDir = path.join(this.baseDir, 'logs', 'mc', this.id);
     this.logFile = path.join(this.logDir, 'latest.log');
     this.logBuffer = [];
@@ -654,7 +648,6 @@ class McServer {
   }
 
   flushLogBuffer() {
-    if (this.logBuffer.length < MC_LOG_FLUSH_THRESHOLD && this.logBuffer.length > 0 && this.logFlushTimer) return;
     if (this.logBuffer.length === 0) return;
     const chunk = this.logBuffer.join('');
     this.logBuffer = [];
@@ -757,26 +750,12 @@ class McServer {
     if (this._statsPending) return null;
     this._statsPending = true;
     try {
-      // 直接使用 pidusage
       const stats = await pidusageLimit(() => pidusage(pid));
       return {
         cpu: Math.min(100, Math.max(0, stats.cpu)),
         memory: { used: stats.memory, total: os.totalmem() }
       };
     } catch (err) {
-      // 备选：如果 pidusage 失败（如进程退出），尝试 ps-list
-      if (psList) {
-        try {
-          const procs = await psList();
-          const proc = procs.find((entry) => Number(entry.pid) === Number(pid));
-          if (proc) {
-            return {
-              cpu: Math.min(100, Math.max(0, Number(proc.cpu) || 0)),
-              memory: { used: Number(proc.memory) || 0, total: os.totalmem() }
-            };
-          }
-        } catch (e) { /* ignore */ }
-      }
       this.pushLog(`获取进程 ${pid} 统计失败: ${err.message}`);
       return null;
     } finally {
@@ -898,6 +877,7 @@ class McServer {
       const program = launchArgs[0];
       const args = launchArgs.slice(1);
       this.process = spawn(program, args, { cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+      this.bindManagedProcess(this.process);
       const actualPid = this.process.pid;
       this.pushLog(`启动命令: ${program} ${args.join(' ')}，PID: ${actualPid}`);
 
@@ -911,6 +891,7 @@ class McServer {
       this.process.on('close', (code) => {
         this.pushLog(`进程已退出，退出码: ${code}`);
         this.process = null;
+        this.clearManagedProcessState();
         this.stopPlayerListPolling();
         this.stopStatsPolling();
         this.stopTpsPolling();
@@ -922,6 +903,7 @@ class McServer {
       this.process.on('error', (err) => {
         this.pushLog(`启动失败: ${err.message}`);
         this.process = null;
+        this.clearManagedProcessState();
         this.clearRestartResetTimer();
       });
       
@@ -933,6 +915,7 @@ class McServer {
       this.pushLog(`启动异常: ${e.message}`);
       console.error('[mc_server] 启动失败详情:', e);
       this.process = null;
+      this.clearManagedProcessState();
       this.clearRestartResetTimer();
       return false;
     }
@@ -978,6 +961,7 @@ class McServer {
       }
       this.pushLog('已强制终止进程');
       this.process = null;
+      this.clearManagedProcessState();
       return true;
     } catch (e) {
       this.pushLog(`强制终止失败: ${e.message}`);
@@ -1231,91 +1215,69 @@ class McServer {
     return null;
   }
 
-  async getProcessSnapshot(forceRefresh = false) {
-    if (!psList) return [];
-    const now = Date.now();
-    if (!forceRefresh && this._processSnapshot && now < this._processSnapshotExpiresAt) {
-      return this._processSnapshot;
-    }
-    if (this._processSnapshotPromise) {
-      return this._processSnapshotPromise;
-    }
-    this._processSnapshotPromise = psList()
-      .then((procs) => {
-        const list = Array.isArray(procs) ? procs : [];
-        this._processSnapshot = list;
-        this._processSnapshotExpiresAt = Date.now() + 2000;
-        return list;
-      })
-      .catch((err) => {
-        this._processSnapshot = [];
-        this._processSnapshotExpiresAt = Date.now() + 1000;
-        throw err;
-      })
-      .finally(() => {
-        this._processSnapshotPromise = null;
-      });
-    return this._processSnapshotPromise;
+  bindManagedProcess(processRef) {
+    if (!processRef || typeof processRef.on !== 'function') return null;
+    this._managedProcessHandle = processRef;
+    this._managedProcessPid = Number(processRef.pid) || null;
+    this._managedProcessState = processRef.pid ? 'spawned' : 'initializing';
+
+    const refreshState = () => {
+      this._managedProcessHandle = processRef;
+      this._managedProcessPid = Number(processRef.pid) || null;
+      this._managedProcessState = processRef.exitCode === null ? 'running' : 'stopped';
+    };
+
+    processRef.removeAllListeners('spawn');
+    processRef.removeAllListeners('error');
+    processRef.removeAllListeners('exit');
+    processRef.removeAllListeners('close');
+
+    processRef.on('spawn', refreshState);
+    processRef.on('error', () => {
+      this._managedProcessState = 'error';
+      this._managedProcessHandle = null;
+      this._managedProcessPid = null;
+    });
+    processRef.on('exit', () => {
+      this._managedProcessState = 'exited';
+      this._managedProcessHandle = null;
+      this._managedProcessPid = null;
+    });
+    processRef.on('close', () => {
+      this._managedProcessState = 'closed';
+      this._managedProcessHandle = null;
+      this._managedProcessPid = null;
+    });
+
+    refreshState();
+    return processRef;
+  }
+
+  clearManagedProcessState() {
+    this._managedProcessHandle = null;
+    this._managedProcessPid = null;
+    this._managedProcessState = 'idle';
   }
 
   async discoverExistingProcess() {
-    if (this.process) return this.process;
-    const now = Date.now();
-    if (this._processDiscoveryCache && now < this._processDiscoveryCacheExpiresAt) {
-      return this._processDiscoveryCache;
-    }
-
-    const jarName = path.basename(String(this.config.jarPath || 'server.jar')).toLowerCase();
-    let pid = null;
-
-    try {
-      const procs = await this.getProcessSnapshot();
-      for (const p of procs) {
-        const name = String(p.name || '').toLowerCase();
-        const cmd = String(p.cmd || p.cmdline || p.command || '').toLowerCase();
-        if ((name.includes('java') || cmd.includes('java')) && cmd.includes(jarName)) {
-          pid = Number(p.pid);
-          break;
-        }
-      }
-    } catch (e) {
-      // ignore
-    }
-
-    const discovered = pid && !Number.isNaN(pid) && pid > 0 ? { pid, recovered: true } : null;
-    this._processDiscoveryCache = discovered;
-    this._processDiscoveryCacheExpiresAt = Date.now() + 5 * 60 * 1000;
-
-    if (discovered) {
-      this.process = discovered;
+    if (this.process && this.process.pid) return this.process;
+    if (this._managedProcessHandle && this._managedProcessPid) {
+      this.process = this._managedProcessHandle;
       this.stopPlayerListPolling();
       this.stopStatsPolling();
-      this.pushLog(`已检测到现有 MC 进程 ${pid}，进入只读恢复模式`);
       return this.process;
     }
     return null;
   }
 
-  async findJavaSubProcess(parentPid, timeoutMs = 8000) {
-    const startTime = Date.now();
-    this.pushLog(`开始查找父进程 ${parentPid} 下的 Java 子进程...`);
-
-    while (Date.now() - startTime < timeoutMs) {
-      try {
-        const procs = await this.getProcessSnapshot();
-        const child = procs.find((p) => Number(p.ppid) === Number(parentPid) && (String(p.name || '').toLowerCase().includes('java') || String(p.cmd || p.cmdline || '').toLowerCase().includes('java')));
-        if (child) {
-          const pid = Number(child.pid);
-          this.pushLog(`找到实际 Java 子进程 PID: ${pid} (父进程: ${parentPid})`);
-          return pid;
-        }
-      } catch (e) {
-        // ignore
-      }
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+  async findJavaSubProcess(parentPid) {
+    if (this._managedProcessPid && this._managedProcessPid > 0) {
+      this.pushLog(`已通过子进程句柄直接获取到 Java PID: ${this._managedProcessPid}`);
+      return this._managedProcessPid;
     }
-
-    this.pushLog(`警告：未能在 ${timeoutMs}ms 内找到 Java 子进程，将保持原有 PID (${parentPid})`);
+    if (this.process && this.process.pid) {
+      return Number(this.process.pid);
+    }
     return null;
   }
 }

@@ -457,6 +457,29 @@ function initMcStatsChart() {
   });
 }
 
+function bindMcRefreshPresetInputListeners() {
+  const playerListInput = document.getElementById('mcPlayerListInterval');
+  const statsInput = document.getElementById('mcStatsInterval');
+  const tpsInput = document.getElementById('mcTpsInterval');
+  const refreshPreset = document.getElementById('mcRefreshPreset');
+  if (!refreshPreset || !playerListInput || !statsInput || !tpsInput) return;
+  if (playerListInput.dataset.bound === 'true') return;
+
+  playerListInput.dataset.bound = 'true';
+  statsInput.dataset.bound = 'true';
+  tpsInput.dataset.bound = 'true';
+
+  const handlePresetInput = () => {
+    if (refreshPreset.value !== 'custom') {
+      refreshPreset.value = 'custom';
+    }
+  };
+
+  playerListInput.addEventListener('input', handlePresetInput);
+  statsInput.addEventListener('input', handlePresetInput);
+  tpsInput.addEventListener('input', handlePresetInput);
+}
+
 function updateCommandPreview() {
     const java = document.getElementById('mcJavaPath')?.value.trim() || 'java';
     const minMem = document.getElementById('mcMinMemory')?.value.trim() || '1024M';
@@ -730,6 +753,7 @@ async function loadMcConfig() {
         const playerListInput = document.getElementById('mcPlayerListInterval');
         const statsInput = document.getElementById('mcStatsInterval');
         const tpsInput = document.getElementById('mcTpsInterval');
+        bindMcRefreshPresetInputListeners();
         const applyPresetValues = (preset) => {
             const values = getMcRefreshPresetValue(preset);
             if (playerListInput) playerListInput.value = values.playerListIntervalSeconds;
@@ -746,28 +770,6 @@ async function loadMcConfig() {
         if (playerListInput && typeof cfg.playerListIntervalSeconds === 'number') playerListInput.value = cfg.playerListIntervalSeconds;
         if (statsInput && typeof cfg.statsIntervalSeconds === 'number') statsInput.value = cfg.statsIntervalSeconds;
         if (tpsInput && typeof cfg.tpsIntervalSeconds === 'number') tpsInput.value = cfg.tpsIntervalSeconds;
-        if (playerListInput) {
-            playerListInput.addEventListener('input', () => {
-                if (refreshPreset && refreshPreset.value !== 'custom') {
-                    refreshPreset.value = 'custom';
-                }
-            });
-        }
-        if (statsInput) {
-            statsInput.addEventListener('input', () => {
-                if (refreshPreset && refreshPreset.value !== 'custom') {
-                    refreshPreset.value = 'custom';
-                }
-            });
-        }
-        if (tpsInput) {
-            tpsInput.addEventListener('input', () => {
-                if (refreshPreset && refreshPreset.value !== 'custom') {
-                    refreshPreset.value = 'custom';
-                }
-            });
-        }
-
         updateCommandPreview();
 
         if (cfg.fullCommand && !cfg.javaPath && !cfg.jarPath) {
