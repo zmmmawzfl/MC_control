@@ -9,7 +9,18 @@ const rateLimit = require('express-rate-limit');
 const winston = require('winston');
 const DailyRotateFile = require('winston-daily-rotate-file');
 const { McServerManager, createMcControlRouter } = require('./mc_server');
-require('dotenv').config();
+const createNetworkRouter = require('./public/network');
+const dotenv = require('dotenv');
+
+const envPath = path.join(__dirname, '.env');
+const sampleEnvPath = path.join(__dirname, '示例.env');
+if (fs.existsSync(envPath)) {
+  dotenv.config({ path: envPath });
+} else if (fs.existsSync(sampleEnvPath)) {
+  dotenv.config({ path: sampleEnvPath });
+} else {
+  dotenv.config();
+}
 
 // ========== 配置 ==========
 const PORT = process.env.PORT || 3233;
@@ -60,6 +71,62 @@ async function ensureDatabaseExists() {
   });
   await connection.query(`CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
   await connection.end();
+}
+
+async function ensureDatabaseTables(dbPool) {
+  await dbPool.execute(`
+    CREATE TABLE IF NOT EXISTS mc_servers (
+      id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      name VARCHAR(100) NOT NULL UNIQUE,
+      display_name VARCHAR(100),
+      config JSON NOT NULL,
+      auto_start TINYINT(1) DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
+  await dbPool.execute(`
+    CREATE TABLE IF NOT EXISTS network_ips (
+      id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      ip VARCHAR(45) NOT NULL UNIQUE,
+      tags JSON NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
+  await dbPool.execute(`
+    CREATE TABLE IF NOT EXISTS network_ip_requests (
+      id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      ip VARCHAR(45) NOT NULL UNIQUE,
+      first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      request_count INT UNSIGNED NOT NULL DEFAULT 1
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+}
+
+async function connectDatabaseWithRetry() {
+  const maxAttempts = Number(process.env.DB_RETRY_ATTEMPTS || 8);
+  const retryDelayMs = Number(process.env.DB_RETRY_DELAY_MS || 3000);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await ensureDatabaseExists();
+      pool = mysql.createPool({
+        ...dbConfig,
+        database: DB_NAME,
+      });
+      await pool.query('SELECT 1');
+      return pool;
+    } catch (err) {
+      logger.error(`数据库连接失败 (第 ${attempt}/${maxAttempts} 次):`, err);
+      if (attempt >= maxAttempts) throw err;
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+    }
+  }
+
+  throw new Error('数据库连接失败');
 }
 
 // ========== 日志系统（轻量） ==========
@@ -160,6 +227,7 @@ app.use(authMiddleware);
 
 // ========== 静态文件服务（在认证之后，但认证中间件已放行静态资源） ==========
 app.use(express.static(path.join(__dirname, 'public')));
+app.use('/api', createNetworkRouter(() => pool, logger));
 
 // ========== 登录路由 ==========
 app.get('/login.html', (req, res) => {
@@ -332,25 +400,10 @@ wss.on('connection', (ws) => {
 // ========== 启动服务 ==========
 async function start() {
   try {
-    await ensureDatabaseExists();
-
-    pool = mysql.createPool({
-      ...dbConfig,
-      database: DB_NAME,
-    });
+    pool = await connectDatabaseWithRetry();
     mcManager.dbPool = pool;
 
-    await pool.execute(`
-      CREATE TABLE IF NOT EXISTS mc_servers (
-        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-        name VARCHAR(100) NOT NULL UNIQUE,
-        display_name VARCHAR(100),
-        config JSON NOT NULL,
-        auto_start TINYINT(1) DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-    `);
+    await ensureDatabaseTables(pool);
     await mcManager.loadFromDatabase();
     server.on('error', handleStartupError);
     server.listen(PORT, () => {

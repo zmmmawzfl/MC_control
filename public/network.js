@@ -7,9 +7,37 @@ const net = require('net');
  * @param {import('winston').Logger} logger - 日志记录器
  * @returns {express.Router}
  */
-module.exports = function(pool, logger) {
+module.exports = function(poolFactory, logger) {
     const router = express.Router();
     const isValidIp = ip => net.isIP(ip) !== 0;
+
+    async function getPool() {
+        const pool = typeof poolFactory === 'function' ? poolFactory() : poolFactory;
+        if (!pool || typeof pool.execute !== 'function') {
+            throw new Error('数据库未初始化');
+        }
+        return pool;
+    }
+
+    async function ensureNetworkTables(pool) {
+        await pool.execute(`
+            CREATE TABLE IF NOT EXISTS network_ips (
+                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                ip VARCHAR(45) NOT NULL UNIQUE,
+                tags JSON NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        `);
+        await pool.execute(`
+            CREATE TABLE IF NOT EXISTS network_ip_requests (
+                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                ip VARCHAR(45) NOT NULL UNIQUE,
+                first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                request_count INT UNSIGNED NOT NULL DEFAULT 1
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        `);
+    }
 
     router.get('/auth/check', async (req, res) => {
         try {
@@ -22,6 +50,9 @@ module.exports = function(pool, logger) {
                 logger.warn(`[network] 非法 IP 地址: ${ip}`);
                 return res.status(400).json(false);
             }
+
+            const pool = await getPool();
+            await ensureNetworkTables(pool);
 
             const [rows] = await pool.execute(
                 'SELECT 1 FROM network_ips WHERE ip = ? LIMIT 1',
@@ -57,15 +88,26 @@ module.exports = function(pool, logger) {
 
     router.get('/network/list', async (req, res) => {
         try {
+            const pool = await getPool();
+            await ensureNetworkTables(pool);
+
             const [rows] = await pool.execute(
                 'SELECT id, ip, tags, created_at FROM network_ips ORDER BY created_at DESC'
             );
-            const result = rows.map(row => ({
-                id: row.id,
-                ip: row.ip,
-                tags: row.tags ? JSON.parse(row.tags) : [],
-                createdAt: row.created_at
-            }));
+            const result = rows.map(row => {
+                let tags = [];
+                try {
+                    tags = row.tags ? JSON.parse(row.tags) : [];
+                } catch (error) {
+                    tags = [];
+                }
+                return {
+                    id: row.id,
+                    ip: row.ip,
+                    tags,
+                    createdAt: row.created_at
+                };
+            });
             res.json(result);
         } catch (error) {
             logger.error(`[network] /network/list 错误: ${error.message}`);
@@ -81,6 +123,9 @@ module.exports = function(pool, logger) {
             }
             const normalizedIp = String(ip).trim();
             const tagArray = Array.isArray(tags) ? tags.map(String).filter(Boolean) : (tags ? [String(tags).trim()] : []);
+
+            const pool = await getPool();
+            await ensureNetworkTables(pool);
 
             await pool.execute(
                 `INSERT INTO network_ips (ip, tags) VALUES (?, ?)
@@ -104,6 +149,9 @@ module.exports = function(pool, logger) {
             const { tags } = req.body;
             const tagArray = Array.isArray(tags) ? tags.map(String).filter(Boolean) : (tags ? [String(tags).trim()] : []);
 
+            const pool = await getPool();
+            await ensureNetworkTables(pool);
+
             const [result] = await pool.execute(
                 'UPDATE network_ips SET tags = ? WHERE id = ?',
                 [JSON.stringify(tagArray), id]
@@ -125,6 +173,9 @@ module.exports = function(pool, logger) {
             if (Number.isNaN(id)) {
                 return res.status(400).json({ error: '无效的记录 ID' });
             }
+            const pool = await getPool();
+            await ensureNetworkTables(pool);
+
             await pool.execute('DELETE FROM network_ips WHERE id = ?', [id]);
             res.json({ success: true });
         } catch (error) {
@@ -135,6 +186,9 @@ module.exports = function(pool, logger) {
 
     router.get('/network/requests', async (req, res) => {
         try {
+            const pool = await getPool();
+            await ensureNetworkTables(pool);
+
             const [rows] = await pool.execute(
                 'SELECT id, ip, first_seen, last_seen, request_count FROM network_ip_requests ORDER BY last_seen DESC'
             );
@@ -160,6 +214,9 @@ module.exports = function(pool, logger) {
             }
 
             // 获取申请的IP
+            const pool = await getPool();
+            await ensureNetworkTables(pool);
+
             const [requestRows] = await pool.execute(
                 'SELECT ip FROM network_ip_requests WHERE id = ?',
                 [id]
@@ -173,7 +230,8 @@ module.exports = function(pool, logger) {
 
             // 添加到白名单
             await pool.execute(
-                `INSERT INTO network_ips (ip, tags) VALUES (?, ?)`,
+                `INSERT INTO network_ips (ip, tags) VALUES (?, ?)
+                 ON DUPLICATE KEY UPDATE tags = VALUES(tags)`,
                 [ip, JSON.stringify([])]
             );
 
@@ -193,6 +251,8 @@ module.exports = function(pool, logger) {
             if (Number.isNaN(id)) {
                 return res.status(400).json({ error: '无效的申请 ID' });
             }
+            const pool = await getPool();
+            await ensureNetworkTables(pool);
             await pool.execute('DELETE FROM network_ip_requests WHERE id = ?', [id]);
             res.json({ success: true });
         } catch (error) {
