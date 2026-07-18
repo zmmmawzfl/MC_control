@@ -676,6 +676,16 @@ class McServer {
   }
 
 
+  clearLogs() {
+    this.logs = [];
+    this.logBuffer = [];
+    try {
+      fs.writeFileSync(this.logFile, '', 'utf8');
+    } catch (e) {
+      // ignore file write errors
+    }
+  }
+
   getLogs(limit = 200) {
     return this.logs.slice(-limit);
   }
@@ -1433,6 +1443,17 @@ class McServerManager {
     return Array.isArray(rows) ? rows : [];
   }
 
+  async clearServerStatsHistory(serverId) {
+    if (!this.dbPool) return;
+    const serverKey = Number(serverId);
+    if (!Number.isFinite(serverKey)) return;
+    try {
+      await this.dbPool.execute('DELETE FROM mc_stats_history WHERE server_id = ?', [serverKey]);
+    } catch (e) {
+      throw new Error(`清除性能历史数据失败: ${e.message}`);
+    }
+  }
+
   async createServer(name, config = {}) {
     if (!this.dbPool) throw new Error('数据库未配置');
     const normalizedConfig = this.normalizeConfigInput(config || {});
@@ -1629,6 +1650,12 @@ function createMcControlRouter(mcManager, logger, options = {}) {
     res.download(logFile, 'mc_latest.log', (err) => {
       if (err) res.status(500).json({ success: false, error: '下载日志失败' });
     });
+  }));
+
+  // ========== 新增：清除日志 ==========
+  router.post('/logs/clear', asyncHandler(async (req, res) => {
+    req.mcServer.clearLogs();
+    res.json({ success: true, message: '日志已清除' });
   }));
 
   router.post('/sync', asyncHandler(async (req, res) => {

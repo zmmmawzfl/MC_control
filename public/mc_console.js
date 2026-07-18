@@ -10,11 +10,14 @@ let mcLogLines = [];
 let mcConsoleFilterText = '';
 let mcStatsChart = null;
 const mcStatsHistory = { cpu: [], memory: [], tps: [], labels: [] };
-const MC_STATS_HISTORY_MAX_MS = 60 * 60 * 1000;
+const MC_STATS_HISTORY_MAX_MS = 24 * 60 * 60 * 1000; // 扩展至 24 小时
 const MC_STATS_CHART_RANGES = {
   '5m': 5 * 60 * 1000,
   '15m': 15 * 60 * 1000,
-  '1h': 60 * 60 * 1000
+  '1h': 60 * 60 * 1000,
+  '6h': 6 * 60 * 60 * 1000,
+  '12h': 12 * 60 * 60 * 1000,
+  '24h': 24 * 60 * 60 * 1000
 };
 const MC_REFRESH_PRESET_VALUES = {
   fast: { playerListIntervalSeconds: 1, statsIntervalSeconds: 5, tpsIntervalSeconds: 1 },
@@ -234,7 +237,6 @@ function appendMcLog(line) {
     level = classifyMcLogLevel(text);
   }
 
-  // 去掉开头的 ISO 时间戳
   text = text.replace(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\s+/, '');
 
   if (!level) return;
@@ -760,6 +762,24 @@ async function downloadMcLog() {
   } catch (error) {
     console.error('下载 MC 日志失败:', error);
     showToast('下载 MC 日志失败', 'error');
+  }
+}
+
+// 新增：清除服务器日志
+async function clearServerLogs() {
+  try {
+    await ensureMcServerSelected();
+    const resp = await fetch(mcApi('/logs/clear'), { method: 'POST' });
+    const data = await resp.json();
+    if (data.success) {
+      showToast('服务器日志已清除', 'success');
+      clearMcConsole();        // 清空前端显示
+    } else {
+      showToast(data.error || '清除日志失败', 'error');
+    }
+  } catch (e) {
+    console.error('清除日志失败:', e);
+    showToast('清除日志失败', 'error');
   }
 }
 
@@ -1310,6 +1330,7 @@ window.loadMcLogs = loadMcLogs;
 window.loadMcPlayers = loadMcPlayers;
 window.refreshMcPlayerList = refreshMcPlayerList;
 window.clearMcConsole = clearMcConsole;
+window.clearServerLogs = clearServerLogs;   // 新增
 window.toggleMcAutoScroll = toggleMcAutoScroll;
 window.setMcStatsRange = setMcStatsRange;
 window.initMcStatsChart = initMcStatsChart;

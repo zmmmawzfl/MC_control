@@ -45,7 +45,6 @@
         </div>
       </div>
 
-      <!-- 系统菜单移入侧边栏 -->
       <div class="nav-item menu-parent" id="systemParent">
         <span><i class="fas fa-info-circle"></i> 系统</span>
         <i class="fas fa-chevron-down menu-arrow"></i>
@@ -93,6 +92,10 @@
                 <option value="5m">最近 5 分钟</option>
                 <option value="15m" selected>最近 15 分钟</option>
                 <option value="1h">最近 1 小时</option>
+                <!-- 新增更长范围 -->
+                <option value="6h">最近 6 小时</option>
+                <option value="12h">最近 12 小时</option>
+                <option value="24h">最近 24 小时</option>
               </select>
             </div>
           </div>
@@ -112,6 +115,8 @@
               <input type="text" id="mcCommandInput" placeholder="输入命令并回车" autocomplete="off" style="flex: 1; min-width: 220px;" />
               <button class="btn btn-secondary" onclick="sendMcCommand()"><i class="fas fa-terminal"></i> 发送</button>
               <button class="btn btn-secondary" onclick="clearMcConsole()"><i class="fas fa-broom"></i> 清屏</button>
+              <!-- 新增清除日志按钮 -->
+              <button class="btn btn-danger" onclick="clearServerLogs()"><i class="fas fa-trash"></i> 清除日志</button>
               <button class="btn btn-secondary" onclick="toggleMcAutoScroll()" id="mcAutoScrollBtn"><i class="fas fa-lock-open"></i> 自动滚动</button>
             </div>
           </div>
@@ -311,7 +316,6 @@
   <!-- Toast -->
   <div class="toast" id="toast"></div>
 
-  
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="/app.js"></script>
   <script src="/mc_console.js"></script>
