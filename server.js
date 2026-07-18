@@ -104,6 +104,19 @@ async function ensureDatabaseTables(dbPool) {
       request_count INT UNSIGNED NOT NULL DEFAULT 1
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
+
+  await dbPool.execute(`
+    CREATE TABLE IF NOT EXISTS mc_stats_history (
+      id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      server_id INT UNSIGNED NOT NULL,
+      cpu DECIMAL(8,2) NULL,
+      memory_used BIGINT UNSIGNED NULL,
+      memory_total BIGINT UNSIGNED NULL,
+      tps DECIMAL(8,2) NULL,
+      recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_mc_stats_history_server_time (server_id, recorded_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
 }
 
 async function connectDatabaseWithRetry() {

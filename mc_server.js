@@ -48,10 +48,11 @@ const LOG_MAX_LINES = 2000;
 const PLAYER_COUNT_REGEX = /There are\s+(\d+)\s+of\s+a\s+max\s+of\s+(\d+)\s+players\s+online/i;
 const PLAYER_LIST_REGEX = /^(?:\[.*?\]\s*)?\[?\s*([^\]]*?)\s*\]?$/;
 class McServer {
-  constructor(id, config = {}, baseDir = process.cwd(), eventCallback = null) {
+  constructor(id, config = {}, baseDir = process.cwd(), eventCallback = null, dbPool = null) {
     this.id = String(id || 'default');
     this.baseDir = baseDir;
     this.eventCallback = typeof eventCallback === 'function' ? eventCallback : null;
+    this.dbPool = dbPool;
     this.config = Object.assign({
       name: this.id,
       display_name: this.id,
@@ -70,6 +71,7 @@ class McServer {
       autoRestart: false,
       autoRestartDelaySeconds: 5,
       autoRestartMaxRetries: 3,
+      recordStatsHistory: true,
       playerListIntervalSeconds: DEFAULT_PLAYER_LIST_INTERVAL_SECONDS,
       tpsIntervalSeconds: DEFAULT_TPS_INTERVAL_SECONDS,
       statsIntervalSeconds: DEFAULT_STATS_INTERVAL_SECONDS
@@ -130,6 +132,24 @@ class McServer {
     }
   }
 
+  async recordStatsSnapshot(cpu = null, memory = null, tps = null) {
+    if (!this.dbPool || !this.config.recordStatsHistory) return;
+    const safeCpu = typeof cpu === 'number' && Number.isFinite(cpu) ? cpu : null;
+    const safeMemory = memory && typeof memory.used === 'number' && Number.isFinite(memory.used) ? Math.max(0, Math.round(memory.used)) : null;
+    const safeMemoryTotal = memory && typeof memory.total === 'number' && Number.isFinite(memory.total) ? Math.max(0, Math.round(memory.total)) : null;
+    const safeTps = typeof tps === 'number' && Number.isFinite(tps) ? tps : null;
+    if (safeCpu === null && safeTps === null && safeMemory === null) return;
+
+    try {
+      await this.dbPool.execute(
+        'INSERT INTO mc_stats_history (server_id, cpu, memory_used, memory_total, tps, recorded_at) VALUES (?, ?, ?, ?, ?, NOW())',
+        [Number(this.id), safeCpu, safeMemory, safeMemoryTotal, safeTps]
+      );
+    } catch (e) {
+      console.warn(`记录性能数据失败 server_id=${this.id}: ${e.message}`);
+    }
+  }
+
   getDefaultPollingConfig() {
     return {
       playerListIntervalSeconds: DEFAULT_PLAYER_LIST_INTERVAL_SECONDS,
@@ -183,6 +203,7 @@ class McServer {
     const newConfig = Object.assign({}, this.config, config);
     newConfig.autoBackupEnabled = newConfig.autoBackupEnabled === true || String(newConfig.autoBackupEnabled) === 'true' || String(newConfig.autoBackupEnabled) === '1';
     newConfig.autoRestart = newConfig.autoRestart === true || String(newConfig.autoRestart) === 'true' || String(newConfig.autoRestart) === '1';
+    newConfig.recordStatsHistory = newConfig.recordStatsHistory === true || String(newConfig.recordStatsHistory) === 'true' || String(newConfig.recordStatsHistory) === '1';
     newConfig.autoRestartDelaySeconds = Number(newConfig.autoRestartDelaySeconds) || 0;
     newConfig.autoRestartMaxRetries = Number(newConfig.autoRestartMaxRetries) || 0;
     const pollingConfig = this.normalizePollingConfig(newConfig);
@@ -816,9 +837,10 @@ class McServer {
         const cpuDiff = Math.abs(stats.cpu - oldCpu);
         const memDiff = Math.abs((stats.memory && stats.memory.used ? stats.memory.used : 0) - oldMemUsed);
         const forceEmit = !this._lastStatsEmitTime || (now - this._lastStatsEmitTime) > (intervalMs * 5);
+        this.latestCpu = stats.cpu;
+        this.latestMemory = stats.memory;
+        void this.recordStatsSnapshot(this.latestCpu, this.latestMemory, this.latestTps);
         if (cpuDiff >= MC_STATS_CPU_THRESHOLD || memDiff >= MC_STATS_MEM_THRESHOLD || forceEmit) {
-          this.latestCpu = stats.cpu;
-          this.latestMemory = stats.memory;
           this._lastStatsEmitTime = now;
           this.emit('mc_stats', { cpu: this.latestCpu, memory: this.latestMemory, tps: this.latestTps });
         }
@@ -1356,10 +1378,11 @@ class McServerManager {
         if (!cfg.name) cfg.name = rowName || String(rowId);
         if (!cfg.display_name) cfg.display_name = row.display_name || cfg.name;
         cfg.auto_start = this.parseBoolean(row.auto_start);
+        cfg.recordStatsHistory = cfg.recordStatsHistory !== false;
 
         let srv;
         try {
-          srv = new McServer(row.id, cfg, this.baseDir, (event, serverId, payload) => this.emitEvent(serverId, event, payload));
+          srv = new McServer(row.id, cfg, this.baseDir, (event, serverId, payload) => this.emitEvent(serverId, event, payload), this.dbPool);
         } catch (e) {
           console.warn(`mc_servers[${rowId}] 实例创建失败，已跳过该记录: ${e.message}`);
           continue;
@@ -1394,6 +1417,22 @@ class McServerManager {
     }));
   }
 
+  async getServerStatsHistory(serverId, windowMs = 60 * 60 * 1000) {
+    if (!this.dbPool) return [];
+    const serverKey = Number(serverId);
+    if (!Number.isFinite(serverKey)) return [];
+    const milliseconds = Number(windowMs) || 60 * 60 * 1000;
+    const seconds = Math.max(1, Math.ceil(milliseconds / 1000));
+    const [rows] = await this.dbPool.execute(
+      `SELECT cpu, memory_used, memory_total, tps, recorded_at
+       FROM mc_stats_history
+       WHERE server_id = ? AND recorded_at >= DATE_SUB(NOW(), INTERVAL ? SECOND)
+       ORDER BY recorded_at ASC`,
+      [serverKey, seconds]
+    );
+    return Array.isArray(rows) ? rows : [];
+  }
+
   async createServer(name, config = {}) {
     if (!this.dbPool) throw new Error('数据库未配置');
     const normalizedConfig = this.normalizeConfigInput(config || {});
@@ -1413,7 +1452,7 @@ class McServerManager {
           [attemptName, payload.display_name, JSON.stringify(payload), payload.auto_start ? 1 : 0]
         );
         const id = result.insertId;
-        const srv = new McServer(id, payload, this.baseDir, (event, serverId, payloadData) => this.emitEvent(serverId, event, payloadData));
+        const srv = new McServer(id, payload, this.baseDir, (event, serverId, payloadData) => this.emitEvent(serverId, event, payloadData), this.dbPool);
         this.servers.set(String(id), srv);
         return srv;
       } catch (e) {
@@ -1536,6 +1575,12 @@ function createMcControlRouter(mcManager, logger, options = {}) {
       const statusCode = e.message === 'autoBackupCron 格式无效' ? 400 : 500;
       res.status(statusCode).json({ success: false, error: e.message });
     }
+  }));
+
+  router.get('/stats/history', asyncHandler(async (req, res) => {
+    const windowMs = Number(req.query.windowMs || 60 * 60 * 1000);
+    const history = await mcManager.getServerStatsHistory(req.params.id, windowMs);
+    res.json({ success: true, history });
   }));
 
   router.get('/players', asyncHandler(async (req, res) => {

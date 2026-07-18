@@ -50,7 +50,8 @@ function fuzzyMatch(keyword, text) {
 function showToast(message, type = 'success') {
     const toast = document.getElementById('toast');
     const icons = { success: 'fa-check-circle', error: 'fa-times-circle', warning: 'fa-exclamation-triangle', info: 'fa-info-circle' };
-    toast.innerHTML = `<i class="fas ${icons[type] || icons.info}"></i> ${message}`;
+    const safeMessage = escapeHtml(message);
+    toast.innerHTML = `<i class="fas ${icons[type] || icons.info}"></i> ${safeMessage}`;
     toast.className = `toast ${type} show`;
     clearTimeout(window._toastTimer);
     window._toastTimer = setTimeout(() => toast.classList.remove('show'), 3000);
@@ -62,11 +63,26 @@ function showModal(id) {
     document.getElementById(id).classList.add('show');
 }
 let confirmCallback = null;
+let promptCallback = null;
 function showConfirmModal(title, message, onConfirm) {
     document.getElementById('confirmTitle').textContent = title || '确认操作';
     document.getElementById('confirmMessage').textContent = message || '确定执行此操作吗？';
     document.getElementById('confirmModal').classList.add('show');
     confirmCallback = onConfirm;
+}
+function showPromptModal(title, message, defaultValue = '', onConfirm) {
+    const promptTitle = document.getElementById('promptTitle');
+    const promptMessage = document.getElementById('promptMessage');
+    const promptInput = document.getElementById('promptInput');
+    if (!promptTitle || !promptMessage || !promptInput) return false;
+    promptTitle.textContent = title || '输入内容';
+    promptMessage.textContent = message || '请输入内容';
+    promptInput.value = defaultValue || '';
+    promptInput.focus();
+    promptInput.select?.();
+    document.getElementById('promptModal').classList.add('show');
+    promptCallback = onConfirm;
+    return true;
 }
 document.getElementById('confirmOkBtn')?.addEventListener('click', () => {
     hideModal('confirmModal');
@@ -75,19 +91,35 @@ document.getElementById('confirmOkBtn')?.addEventListener('click', () => {
         confirmCallback = null;
     }
 });
+document.getElementById('promptOkBtn')?.addEventListener('click', () => {
+    const promptInput = document.getElementById('promptInput');
+    const value = promptInput?.value.trim() || '';
+    hideModal('promptModal');
+    if (typeof promptCallback === 'function') {
+        promptCallback(value);
+        promptCallback = null;
+    }
+});
+document.getElementById('promptCancelBtn')?.addEventListener('click', () => {
+    hideModal('promptModal');
+    promptCallback = null;
+});
 
 // ========== 认证检查 ==========
 async function checkAuth() {
     try {
-        const res = await fetch('/api/mc/servers');
+        const res = await fetch('/api/mc/servers', { cache: 'no-store' });
         if (res.status === 401) {
             window.location.href = '/login.html';
             return false;
         }
+        if (!res.ok) {
+            console.warn('认证检查失败，状态码:', res.status);
+            return false;
+        }
         return true;
     } catch (e) {
-        // 网络错误时也重定向到登录
-        window.location.href = '/login.html';
+        console.warn('认证检查异常:', e);
         return false;
     }
 }
@@ -100,14 +132,33 @@ let reconnectTimer = null;
 let reconnectAttempts = 0;
 const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
 
+function setWsConnectionState(state) {
+    const statusDot = document.getElementById('wsStatus');
+    const statusText = document.getElementById('wsStatusText');
+    if (!statusDot || !statusText) return;
+
+    statusDot.classList.remove('connected');
+    if (state === 'connected') {
+        statusDot.classList.add('connected');
+        statusText.textContent = '已连接';
+    } else if (state === 'connecting') {
+        statusText.textContent = '连接中';
+    } else {
+        statusText.textContent = '已断开';
+    }
+}
+
 function connectWebSocket() {
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        setWsConnectionState(ws.readyState === WebSocket.OPEN ? 'connected' : 'connecting');
+        return;
+    }
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
 
+    setWsConnectionState('connecting');
     ws = new WebSocket(WS_URL);
     ws.onopen = () => {
-        document.getElementById('wsStatus').classList.add('connected');
-        document.getElementById('wsStatusText').textContent = '已连接';
+        setWsConnectionState('connected');
         reconnectAttempts = 0;
         showToast('已连接到服务器', 'success');
         // 使用 '*' 订阅所有服务器
@@ -116,25 +167,28 @@ function connectWebSocket() {
         ws.send(JSON.stringify({ type: 'subscribe_mc_stats', serverId: '*' }));
     };
     ws.onclose = (event) => {
-        document.getElementById('wsStatus').classList.remove('connected');
-        document.getElementById('wsStatusText').textContent = '已断开';
+        setWsConnectionState('disconnected');
         if (event.code === 1008) {
             showToast('WebSocket 未授权，请重新登录', 'error');
             return;
         }
         if (!document.querySelector('body').dataset.unloading) {
-            showToast('与服务器断开，正在重连...', 'error');
+            const retryDelay = Math.min(30000, 1000 * Math.pow(1.5, reconnectAttempts));
             if (reconnectAttempts < 6) {
+                showToast('与服务器断开，正在重连...', 'error');
                 reconnectTimer = setTimeout(() => {
                     reconnectAttempts++;
                     connectWebSocket();
-                }, Math.min(30000, 1000 * Math.pow(1.5, reconnectAttempts)));
+                }, retryDelay);
             } else {
                 showToast('重连失败，请刷新页面', 'error');
             }
         }
     };
-    ws.onerror = (err) => console.error('WebSocket 错误:', err);
+    ws.onerror = (err) => {
+        console.error('WebSocket 错误:', err);
+        setWsConnectionState('connecting');
+    };
     ws.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
@@ -241,8 +295,12 @@ window.addEventListener('beforeunload', () => {
 // ========== 启动 ==========
 async function initApp() {
     const authed = await checkAuth();
-    if (!authed) return;
+    if (!authed) {
+        window.location.href = '/login.html';
+        return;
+    }
     // 认证通过后初始化
+    setWsConnectionState('connecting');
     connectWebSocket();
     // 加载服务器列表（由 mc_console.js 处理）
     if (typeof loadMcServers === 'function') {
@@ -260,6 +318,7 @@ window.showToast = showToast;
 window.showModal = showModal;
 window.hideModal = hideModal;
 window.showConfirmModal = showConfirmModal;
+window.showPromptModal = showPromptModal;
 window.logout = logout;
 window.escapeHtml = escapeHtml;
 window.fuzzyMatch = fuzzyMatch;

@@ -1,4 +1,4 @@
-/* global showToast, showConfirmModal, ws, Chart */
+/* global showToast, showConfirmModal, showPromptModal, ws, Chart */
 /* exported confirmMcPlayerAction */
 const ANSI_ESCAPE_CHAR = String.fromCharCode(0x1b);
 const ANSI_CSI_CHAR = String.fromCharCode(0x9b);
@@ -261,9 +261,12 @@ async function loadMcBackups() {
       container.innerHTML = `<p class="mc-player-empty">暂无备份文件</p>`;
       return;
     }
-    const items = data.backups.map(b => {
+    const items = data.backups.map((b) => {
       const date = new Date(b.mtime).toLocaleString();
-      return `<div class="mc-player-item"><span>${b.name} <small style="color:var(--gray);">${date} · ${Math.round(b.size/1024)} KB</small></span><div style="display:flex;gap:0.5rem;"><button class="btn btn-sm btn-success" onclick="downloadMcBackup('${b.name}')"><i class="fas fa-download"></i> 下载</button><button class="btn btn-sm btn-secondary" onclick="confirmRestoreMcBackup('${b.name}')"><i class="fas fa-undo"></i> 还原</button></div></div>`;
+      const name = typeof b.name === 'string' ? b.name : String(b.name || '');
+      const safeName = escapeHtml(name);
+      const safeNameJson = JSON.stringify(name);
+      return `<div class="mc-player-item"><span>${safeName} <small style="color:var(--gray);">${date} · ${Math.round(b.size/1024)} KB</small></span><div style="display:flex;gap:0.5rem;"><button class="btn btn-sm btn-success" onclick="downloadMcBackup(${safeNameJson})"><i class="fas fa-download"></i> 下载</button><button class="btn btn-sm btn-secondary" onclick="confirmRestoreMcBackup(${safeNameJson})"><i class="fas fa-undo"></i> 还原</button></div></div>`;
     }).join('');
     container.innerHTML = `<div>${items}</div>`;
   } catch (e) {
@@ -291,9 +294,9 @@ function downloadMcBackup(name) {
 function confirmRestoreMcBackup(name) {
   if (typeof showConfirmModal === 'function') {
     showConfirmModal('确认还原', `确认要从备份 ${name} 还原世界吗？此操作会覆盖当前世界，并在完成后重启服务器。`, () => restoreMcBackup(name));
-  } else if (window.confirm(`确认要从备份 ${name} 还原世界吗？此操作会覆盖当前世界，并在完成后重启服务器。`)) {
-    restoreMcBackup(name);
+    return;
   }
+  showToast?.('当前浏览器不支持确认弹窗，请刷新页面后再试', 'error');
 }
 
 async function restoreMcBackup(name) {
@@ -530,6 +533,48 @@ function pruneMcStatsHistory() {
   }
 }
 
+function resetMcStatsHistory() {
+  mcStatsHistory.cpu.length = 0;
+  mcStatsHistory.memory.length = 0;
+  mcStatsHistory.tps.length = 0;
+  mcStatsHistory.labels.length = 0;
+}
+
+function applyMcStatsHistory(history = []) {
+  resetMcStatsHistory();
+  if (!Array.isArray(history) || history.length === 0) {
+    updateMcStatsChart();
+    return;
+  }
+
+  history.forEach((entry) => {
+    const timestamp = new Date(entry.recorded_at || entry.timestamp || Date.now()).getTime();
+    if (!Number.isFinite(timestamp)) return;
+    mcStatsHistory.labels.push(timestamp);
+    mcStatsHistory.cpu.push(toNumber(entry.cpu));
+    mcStatsHistory.memory.push(toNumber(entry.memory_used) != null ? toNumber(entry.memory_used) / 1024 / 1024 : null);
+    mcStatsHistory.tps.push(toNumber(entry.tps));
+  });
+
+  pruneMcStatsHistory();
+  updateMcStatsChart();
+}
+
+async function loadMcStatsHistory(windowMs = MC_STATS_HISTORY_MAX_MS) {
+  try {
+    await ensureMcServerSelected();
+    const response = await fetch(`${mcApi('/stats/history')}?windowMs=${encodeURIComponent(windowMs)}`, { cache: 'no-store' });
+    const data = await response.json();
+    if (!data.success) {
+      showToast(data.error || '加载性能历史失败', 'error');
+      return;
+    }
+    applyMcStatsHistory(data.history || []);
+  } catch (error) {
+    console.error('加载性能历史失败:', error);
+  }
+}
+
 function updateMcStatsChart() {
   if (!mcStatsChart) initMcStatsChart();
   if (!mcStatsChart) return;
@@ -633,14 +678,16 @@ function renderPlayerList(players, count, max) {
   }
 
   const listItems = players.map((player) => {
-    const safeName = player.replace(/'/g, "\\'");
+    const safePlayer = typeof player === 'string' ? player : String(player || '');
+    const playerHtml = escapeHtml(safePlayer);
+    const playerActionArg = JSON.stringify(safePlayer);
     return `<div class="mc-player-item">
-              <span><i class="fas fa-user"></i> ${player}</span>
+              <span><i class="fas fa-user"></i> ${playerHtml}</span>
               <div style="display:flex; gap:0.5rem; flex-wrap: wrap;">
-                <button class="btn btn-secondary btn-sm" title="踢出玩家 ${player}" onclick="confirmMcPlayerAction('${safeName}', 'kick')"><i class="fas fa-sign-out-alt"></i> 踢出</button>
-                <button class="btn btn-danger btn-sm" title="封禁玩家 ${player}" onclick="confirmMcPlayerAction('${safeName}', 'ban')"><i class="fas fa-ban"></i> 封禁</button>
-                <button class="btn btn-success btn-sm" title="授予 OP ${player}" onclick="confirmMcPlayerAction('${safeName}', 'op')"><i class="fas fa-user-shield"></i> OP</button>
-                <button class="btn btn-secondary btn-sm" title="撤销 OP ${player}" onclick="confirmMcPlayerAction('${safeName}', 'deop')"><i class="fas fa-user-minus"></i> DEOP</button>
+                <button class="btn btn-secondary btn-sm" title="踢出玩家 ${playerHtml}" onclick="confirmMcPlayerAction(${playerActionArg}, 'kick')"><i class="fas fa-sign-out-alt"></i> 踢出</button>
+                <button class="btn btn-danger btn-sm" title="封禁玩家 ${playerHtml}" onclick="confirmMcPlayerAction(${playerActionArg}, 'ban')"><i class="fas fa-ban"></i> 封禁</button>
+                <button class="btn btn-success btn-sm" title="授予 OP ${playerHtml}" onclick="confirmMcPlayerAction(${playerActionArg}, 'op')"><i class="fas fa-user-shield"></i> OP</button>
+                <button class="btn btn-secondary btn-sm" title="撤销 OP ${playerHtml}" onclick="confirmMcPlayerAction(${playerActionArg}, 'deop')"><i class="fas fa-user-minus"></i> DEOP</button>
               </div>
             </div>`;
   });
@@ -674,9 +721,9 @@ function confirmMcPlayerAction(player, action) {
   };
   if (typeof showConfirmModal === 'function') {
     showConfirmModal(`确认${actionLabel}`, message, actionCallback);
-  } else if (window.confirm(message)) {
-    actionCallback();
+    return;
   }
+  showToast?.('当前浏览器不支持确认弹窗，请刷新页面后再试', 'error');
 }
 
 async function refreshMcPlayerList() {
@@ -700,8 +747,9 @@ async function refreshMcPlayerList() {
   }
 }
 
-function downloadMcLog() {
+async function downloadMcLog() {
   try {
+    await ensureMcServerSelected();
     const link = document.createElement('a');
     link.href = mcApi('/logs/download');
     link.download = 'mc_latest.log';
@@ -735,6 +783,8 @@ async function loadMcConfig() {
         document.getElementById('mcConfigDir').value = cfg.workingDir || '';
         const autoRestartCheckbox = document.getElementById('mcAutoRestartInput');
         if (autoRestartCheckbox) autoRestartCheckbox.checked = !!cfg.autoRestart;
+        const recordStatsHistoryCheckbox = document.getElementById('mcRecordStatsHistory');
+        if (recordStatsHistoryCheckbox) recordStatsHistoryCheckbox.checked = cfg.recordStatsHistory !== false;
         const delay = document.getElementById('mcAutoRestartDelay');
         if (delay && typeof cfg.autoRestartDelaySeconds === 'number') delay.value = cfg.autoRestartDelaySeconds;
         const maxRetries = document.getElementById('mcAutoRestartMaxRetries');
@@ -771,6 +821,7 @@ async function loadMcConfig() {
         if (statsInput && typeof cfg.statsIntervalSeconds === 'number') statsInput.value = cfg.statsIntervalSeconds;
         if (tpsInput && typeof cfg.tpsIntervalSeconds === 'number') tpsInput.value = cfg.tpsIntervalSeconds;
         updateCommandPreview();
+        await loadMcStatsHistory();
 
         if (cfg.fullCommand && !cfg.javaPath && !cfg.jarPath) {
             showToast('检测到旧版完整命令配置，请重新填写分解字段并保存', 'warning');
@@ -791,6 +842,7 @@ async function saveMcConfig() {
     const additionalArgs = document.getElementById('mcAdditionalArgs')?.value.trim() || '';
     const workingDir = document.getElementById('mcConfigDir')?.value.trim() || '';
     const autoRestart = !!document.getElementById('mcAutoRestartInput')?.checked;
+    const recordStatsHistory = document.getElementById('mcRecordStatsHistory')?.checked !== false;
     const autoRestartDelayRaw = document.getElementById('mcAutoRestartDelay')?.value;
     const autoRestartDelaySeconds = autoRestartDelayRaw === '' ? undefined : parseInt(autoRestartDelayRaw, 10);
     const autoRestartMaxRetriesRaw = document.getElementById('mcAutoRestartMaxRetries')?.value;
@@ -825,6 +877,7 @@ async function saveMcConfig() {
         backupRetentionCount,
         backupRetentionDays,
         autoRestart,
+        recordStatsHistory,
         autoRestartDelaySeconds,
         autoRestartMaxRetries,
         playerListIntervalSeconds,
@@ -860,6 +913,7 @@ async function loadMcStatus() {
     const data = await response.json();
     const statusNode = document.getElementById('mcStatus');
     const pidNode = document.getElementById('mcPid');
+    if (!statusNode || !pidNode) return;
     if (data.running) {
       const recovered = data.recovered === true;
       statusNode.textContent = recovered ? '运行中（只读）' : '运行中';
@@ -870,8 +924,10 @@ async function loadMcStatus() {
     }
   } catch (error) {
     console.error('加载 MC 状态失败:', error);
-    document.getElementById('mcStatus').textContent = '未知';
-    document.getElementById('mcPid').textContent = '-';
+    const statusNode = document.getElementById('mcStatus');
+    const pidNode = document.getElementById('mcPid');
+    if (statusNode) statusNode.textContent = '未知';
+    if (pidNode) pidNode.textContent = '-';
   }
 }
 
@@ -983,13 +1039,9 @@ async function stopMinecraftServer() {
           else showToast('强制终止失败', 'error');
           await loadMcStatus();
         });
-      } else if (window.confirm(msg)) {
-        const resp = await fetch(mcApi('/kill'), { method: 'POST' });
-        const data = await resp.json();
-        if (data.success) showToast('已强制终止 MC 服务器', 'success');
-        else showToast('强制终止失败', 'error');
-        await loadMcStatus();
+        return;
       }
+      showToast?.('当前浏览器不支持确认弹窗，请刷新页面后再试', 'error');
       return;
     }
 
@@ -1112,7 +1164,7 @@ async function loadMcServers() {
       return;
     }
     const previous = currentMcServerId;
-    const options = data.servers.map((s) => `<option value="${s.id}">${s.display_name || s.name || s.id}</option>`).join('');
+    const options = data.servers.map((s) => `<option value="${s.id}">${escapeHtml(s.display_name || s.name || s.id)}</option>`).join('');
     select.innerHTML = options;
     if (previous && data.servers.some((s) => String(s.id) === String(previous))) {
       currentMcServerId = previous;
@@ -1164,29 +1216,39 @@ function switchMcServer() {
   loadMcLogs();
   loadMcPlayers();
   loadMcConfig();
+  loadMcStatsHistory();
   sendMcSubscription(currentMcServerId);
 }
 
 async function createMcServer() {
-  const name = window.prompt('请输入新 MC 服务器实例名称:');
-  if (!name) return;
-  try {
-    const response = await fetch('/api/mc/servers', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, config: { fullCommand: '', workingDir: '', backupDir: 'backups', autoRestart: false, autoRestartDelaySeconds: 5, autoRestartMaxRetries: 3, autoBackupEnabled: false, autoBackupCron: '', backupRetentionCount: 7, backupRetentionDays: 30, playerListIntervalSeconds: 5, statsIntervalSeconds: 15, tpsIntervalSeconds: 5 } })
+  if (typeof showPromptModal === 'function') {
+    showPromptModal('新增实例', '请输入新 MC 服务器实例名称：', '', async (name) => {
+      const trimmedName = String(name || '').trim();
+      if (!trimmedName) {
+        showToast?.('实例名称不能为空', 'warning');
+        return;
+      }
+      try {
+        const response = await fetch('/api/mc/servers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: trimmedName, config: { fullCommand: '', workingDir: '', backupDir: 'backups', autoRestart: false, autoRestartDelaySeconds: 5, autoRestartMaxRetries: 3, autoBackupEnabled: false, autoBackupCron: '', backupRetentionCount: 7, backupRetentionDays: 30, playerListIntervalSeconds: 5, statsIntervalSeconds: 15, tpsIntervalSeconds: 5 } })
+        });
+        const result = await response.json();
+        if (result.success) {
+          showToast?.('MC 实例已创建', 'success');
+          await loadMcServers();
+        } else {
+          showToast?.(result.error || '创建实例失败', 'error');
+        }
+      } catch (e) {
+        console.error('创建 MC 实例失败', e);
+        showToast?.('创建实例失败', 'error');
+      }
     });
-    const result = await response.json();
-    if (result.success) {
-      showToast?.('MC 实例已创建', 'success');
-      await loadMcServers();
-    } else {
-      showToast?.(result.error || '创建实例失败', 'error');
-    }
-  } catch (e) {
-    console.error('创建 MC 实例失败', e);
-    showToast?.('创建实例失败', 'error');
+    return;
   }
+  showToast?.('当前浏览器不支持输入弹窗，请刷新页面后再试', 'error');
 }
 
 async function deleteMcServer(id) {
@@ -1213,9 +1275,11 @@ function confirmDeleteMcServer() {
     return;
   }
   const msg = `确认删除 MC 实例 ${sel.options[sel.selectedIndex]?.text || sel.value} 吗？此操作不可撤销。`;
-  if (window.confirm(msg)) {
-    deleteMcServer(sel.value);
+  if (typeof showConfirmModal === 'function') {
+    showConfirmModal('确认删除', msg, () => deleteMcServer(sel.value));
+    return;
   }
+  showToast?.('当前浏览器不支持确认弹窗，请刷新页面后再试', 'error');
 }
 
 loadCommandHistory();
