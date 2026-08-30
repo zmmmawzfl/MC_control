@@ -1604,6 +1604,16 @@ function createMcControlRouter(mcManager, logger, options = {}) {
     res.json({ success: true, history });
   }));
 
+  // 清除性能历史（例如用于重置图表数据）
+  router.post('/stats/clear', asyncHandler(async (req, res) => {
+    try {
+      await mcManager.clearServerStatsHistory(req.params.id);
+      res.json({ success: true, message: '性能历史已清除' });
+    } catch (e) {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  }));
+
   router.get('/players', asyncHandler(async (req, res) => {
     const info = req.mcServer.playerInfo || { players: [], count: 0, max: 0 };
     res.json({ success: true, players: info.players, count: info.count, max: info.max });
@@ -1713,7 +1723,12 @@ function createMcControlRouter(mcManager, logger, options = {}) {
   return router;
 }
 
-module.exports = McServer;
-module.exports.McServer = McServer;
-module.exports.McServerManager = McServerManager;
-module.exports.createMcControlRouter = createMcControlRouter;
+// 导出统一对象，兼容直接 require() 和解构导入
+module.exports = {
+  McServer,
+  McServerManager,
+  createMcControlRouter,
+};
+
+// 兼容旧式默认导出（保留以不破坏外部使用习惯）
+module.exports.default = McServer;

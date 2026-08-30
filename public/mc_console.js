@@ -13,6 +13,7 @@ const mcStatsHistory = { cpu: [], memory: [], tps: [], labels: [] };
 const MC_STATS_HISTORY_MAX_MS = 24 * 60 * 60 * 1000; // 扩展至 24 小时
 const MC_STATS_CHART_RANGES = {
   '5m': 5 * 60 * 1000,
+  '30m': 30 * 60 * 1000,
   '15m': 15 * 60 * 1000,
   '1h': 60 * 60 * 1000,
   '6h': 6 * 60 * 60 * 1000,
@@ -577,6 +578,25 @@ async function loadMcStatsHistory(windowMs = MC_STATS_HISTORY_MAX_MS) {
   }
 }
 
+// 前端请求清除性能历史并更新图表
+async function clearMcStatsHistory() {
+  try {
+    await ensureMcServerSelected();
+    const resp = await fetch(mcApi('/stats/clear'), { method: 'POST' });
+    const data = await resp.json();
+    if (data.success) {
+      showToast(data.message || '性能历史已清除', 'success');
+      resetMcStatsHistory();
+      updateMcStatsChart();
+    } else {
+      showToast(data.error || '清除性能历史失败', 'error');
+    }
+  } catch (e) {
+    console.error('清除性能历史失败', e);
+    showToast('清除性能历史失败', 'error');
+  }
+}
+
 function updateMcStatsChart() {
   if (!mcStatsChart) initMcStatsChart();
   if (!mcStatsChart) return;
@@ -594,7 +614,16 @@ function setMcStatsRange(range) {
   mcStatsChartRange = range;
   const rangeSelect = document.getElementById('mcStatsRangeSelect');
   if (rangeSelect) rangeSelect.value = range;
-  updateMcStatsChart();
+  // 重新从后端加载该时间窗口的历史数据，然后刷新图表
+  const windowMs = getMcStatsTimeWindowMs();
+  if (windowMs) {
+    loadMcStatsHistory(windowMs).then(() => updateMcStatsChart()).catch((e) => {
+      console.error('加载性能历史失败:', e);
+      updateMcStatsChart();
+    });
+  } else {
+    updateMcStatsChart();
+  }
 }
 
 function getMcRefreshPresetFromConfig(cfg = {}) {
@@ -1344,3 +1373,4 @@ window.loadMcBackups = loadMcBackups;
 window.downloadMcBackup = downloadMcBackup;
 window.confirmRestoreMcBackup = confirmRestoreMcBackup;
 window.restoreMcBackup = restoreMcBackup;
+window.clearMcStatsHistory = clearMcStatsHistory;
