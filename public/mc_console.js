@@ -1223,7 +1223,19 @@ async function loadMcServers() {
     select.value = currentMcServerId || '';
     updateMcSelectedServerLabel();
     if (currentMcServerId) {
-      switchMcServer();
+      if (previous !== currentMcServerId) {
+        switchMcServer();
+      } else {
+        // 选择未改变，仍需刷新显示并确保订阅
+        updateMcSelectedServerLabel();
+        loadMcStatus();
+        loadMcLogs();
+        loadMcPlayers();
+        loadMcConfig();
+        loadMcStatsHistory();
+        // 如果 WebSocket 已连接，尝试（幂等）订阅当前实例
+        try { sendMcSubscription(currentMcServerId); } catch (e) { /* ignore */ }
+      }
     }
   } catch (e) {
     console.warn('加载 MC 服务器列表失败', e);

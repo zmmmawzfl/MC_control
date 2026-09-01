@@ -108,6 +108,7 @@ class McServer {
     this._managedProcessHandle = null;
     this._managedProcessPid = null;
     this._managedProcessState = 'idle';
+    this._logWriteQueue = Promise.resolve();
     this.logDir = path.join(this.baseDir, 'logs', 'mc', this.id);
     this.logFile = path.join(this.logDir, 'latest.log');
     this.logBuffer = [];
@@ -340,7 +341,8 @@ class McServer {
     if (!this.process || this.process.recovered || !this.process.stdin || this.process.stdin.destroyed) return false;
     const now = Date.now();
     if (now - this._lastPlayerRefreshAt < 4000) {
-      return true;
+      // 命令未发送：这是受限频率控制导致的失败，而不是成功刷新。
+      return false;
     }
     this._lastPlayerRefreshAt = now;
     const ok = this.sendCommand('list', true);
@@ -672,7 +674,11 @@ class McServer {
     if (this.logBuffer.length === 0) return;
     const chunk = this.logBuffer.join('');
     this.logBuffer = [];
-    fs.promises.appendFile(this.logFile, chunk).catch(() => {});
+    this._logWriteQueue = this._logWriteQueue
+      .then(async () => {
+        await fs.promises.appendFile(this.logFile, chunk);
+      })
+      .catch(() => {});
   }
 
 
@@ -909,6 +915,7 @@ class McServer {
       const program = launchArgs[0];
       const args = launchArgs.slice(1);
       this.process = spawn(program, args, { cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+      this.process.recovered = false;
       this.bindManagedProcess(this.process);
       const actualPid = this.process.pid;
       this.pushLog(`启动命令: ${program} ${args.join(' ')}，PID: ${actualPid}`);
@@ -980,7 +987,8 @@ class McServer {
       this.stopStatsPolling();
       this.stopTpsPolling();
       this.stopAutoRestart();
-      const pid = this.process.pid;
+      const processRef = this.process;
+      const pid = processRef.pid;
       if (!pid) return false;
       if (process.platform === 'win32') {
         spawn('taskkill', ['/pid', String(pid), '/f', '/t'], { windowsHide: true });
@@ -992,8 +1000,17 @@ class McServer {
         }
       }
       this.pushLog('已强制终止进程');
-      this.process = null;
-      this.clearManagedProcessState();
+      if (processRef && typeof processRef.once === 'function' && processRef.exitCode === null) {
+        processRef.once('close', () => {
+          if (this.process === processRef) {
+            this.process = null;
+          }
+          this.clearManagedProcessState();
+        });
+      } else {
+        this.process = null;
+        this.clearManagedProcessState();
+      }
       return true;
     } catch (e) {
       this.pushLog(`强制终止失败: ${e.message}`);
@@ -1249,6 +1266,7 @@ class McServer {
 
   bindManagedProcess(processRef) {
     if (!processRef || typeof processRef.on !== 'function') return null;
+    processRef.recovered = false;
     this._managedProcessHandle = processRef;
     this._managedProcessPid = Number(processRef.pid) || null;
     this._managedProcessState = processRef.pid ? 'spawned' : 'initializing';
@@ -1295,6 +1313,7 @@ class McServer {
     if (this.process && this.process.pid) return this.process;
     if (this._managedProcessHandle && this._managedProcessPid) {
       this.process = this._managedProcessHandle;
+      this.process.recovered = true;
       this.stopPlayerListPolling();
       this.stopStatsPolling();
       return this.process;
@@ -1534,7 +1553,18 @@ class McServerManager {
       try { srv.kill(); } catch (e) { /* ignore kill errors */ }
     }
     if (this.dbPool) {
-      await this.dbPool.execute('DELETE FROM mc_servers WHERE id = ?', [id]);
+      const connection = await this.dbPool.getConnection();
+      try {
+        await connection.beginTransaction();
+        await connection.execute('DELETE FROM mc_stats_history WHERE server_id = ?', [id]);
+        await connection.execute('DELETE FROM mc_servers WHERE id = ?', [id]);
+        await connection.commit();
+      } catch (e) {
+        try { await connection.rollback(); } catch (rollbackErr) { /* ignore rollback error */ }
+        throw e;
+      } finally {
+        connection.release();
+      }
     }
     if (options && options.removeFiles && srv) {
       try {

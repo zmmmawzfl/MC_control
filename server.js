@@ -371,7 +371,13 @@ wss.on('error', (err) => {
   logger.error('WebSocket Server error:', err);
   process.exit(1);
 });
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
+  const cookies = parseCookies(req && req.headers ? req.headers.cookie || '' : '');
+  if (!verifyAuthToken(cookies[AUTH_CONFIG.cookieName])) {
+    ws.close(1008, 'Unauthorized');
+    return;
+  }
+
   ws.mcSubscriptions = new Set();
   ws.subscribedMcPlayers = false;
   ws.subscribedMcStats = false;

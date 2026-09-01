@@ -130,11 +130,14 @@ async function checkAuth() {
 let ws = null;
 let reconnectTimer = null;
 let reconnectAttempts = 0;
+let prevWsState = 'disconnected';
 const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
 
 function setWsConnectionState(state) {
+    if (state === prevWsState) return;
     const statusDot = document.getElementById('wsStatus');
     const statusText = document.getElementById('wsStatusText');
+    prevWsState = state;
     if (!statusDot || !statusText) return;
 
     statusDot.classList.remove('connected');
@@ -149,6 +152,9 @@ function setWsConnectionState(state) {
 }
 
 function connectWebSocket() {
+    if (ws && ws.readyState === WebSocket.CLOSED) {
+        ws = null;
+    }
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
         setWsConnectionState(ws.readyState === WebSocket.OPEN ? 'connected' : 'connecting');
         return;
@@ -158,15 +164,22 @@ function connectWebSocket() {
     setWsConnectionState('connecting');
     ws = new WebSocket(WS_URL);
     ws.onopen = () => {
+        const oldState = prevWsState;
         setWsConnectionState('connected');
+        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
         reconnectAttempts = 0;
-        showToast('已连接到服务器', 'success');
+        if (oldState !== 'connected') showToast('已连接到服务器', 'success');
         // 使用 '*' 订阅所有服务器
-        ws.send(JSON.stringify({ type: 'subscribe_mc', serverId: '*' }));
-        ws.send(JSON.stringify({ type: 'subscribe_mc_players', serverId: '*' }));
-        ws.send(JSON.stringify({ type: 'subscribe_mc_stats', serverId: '*' }));
+        try {
+            ws.send(JSON.stringify({ type: 'subscribe_mc', serverId: '*' }));
+            ws.send(JSON.stringify({ type: 'subscribe_mc_players', serverId: '*' }));
+            ws.send(JSON.stringify({ type: 'subscribe_mc_stats', serverId: '*' }));
+        } catch (e) {
+            console.warn('订阅消息发送失败:', e);
+        }
     };
     ws.onclose = (event) => {
+        const oldState = prevWsState;
         setWsConnectionState('disconnected');
         if (event.code === 1008) {
             showToast('WebSocket 未授权，请重新登录', 'error');
@@ -175,7 +188,9 @@ function connectWebSocket() {
         if (!document.querySelector('body').dataset.unloading) {
             const retryDelay = Math.min(30000, 1000 * Math.pow(1.5, reconnectAttempts));
             if (reconnectAttempts < 6) {
-                showToast('与服务器断开，正在重连...', 'error');
+                if (oldState === 'connected' || reconnectAttempts === 0) {
+                    showToast('与服务器断开，正在重连...', 'error');
+                }
                 reconnectTimer = setTimeout(() => {
                     reconnectAttempts++;
                     connectWebSocket();
@@ -187,7 +202,9 @@ function connectWebSocket() {
     };
     ws.onerror = (err) => {
         console.error('WebSocket 错误:', err);
-        setWsConnectionState('connecting');
+        // 将错误视为断开，触发重连流程（onclose）
+        try { ws.close(); } catch (e) {}
+        setWsConnectionState('disconnected');
     };
     ws.onmessage = (event) => {
         try {
