@@ -293,11 +293,17 @@ class McServer {
     const parts = String(cronExpression || '').trim().split(/\s+/);
     if (parts.length !== 5) return false;
     const [minuteExpr, hourExpr, dayExpr, monthExpr, dowExpr] = parts;
-    return this.parseCronField(minuteExpr, now.getMinutes(), 0, 59)
-      && this.parseCronField(hourExpr, now.getHours(), 0, 23)
-      && this.parseCronField(dayExpr, now.getDate(), 1, 31)
-      && this.parseCronField(monthExpr, now.getMonth() + 1, 1, 12)
-      && this.parseCronField(dowExpr, now.getDay(), 0, 6);
+
+    const minuteMatch = this.parseCronField(minuteExpr, now.getMinutes(), 0, 59);
+    const hourMatch = this.parseCronField(hourExpr, now.getHours(), 0, 23);
+    const monthMatch = this.parseCronField(monthExpr, now.getMonth() + 1, 1, 12);
+    const dayMatch = this.parseCronField(dayExpr, now.getDate(), 1, 31);
+    const dowMatch = this.parseCronField(dowExpr, now.getDay(), 0, 6);
+
+    // Cron 的 day-of-month 和 day-of-week 在 Quartz/Unix 语义中通常是 OR 关系，
+    // 只有当两者都被显式限定时才需要交叉匹配；单一 '*' 视为全匹配。
+    const dayOrDowMatches = dayExpr === '*' || dowExpr === '*' ? dayMatch && dowMatch : dayMatch || dowMatch;
+    return minuteMatch && hourMatch && monthMatch && dayOrDowMatches;
   }
 
   getAutoBackupKey(now) {
