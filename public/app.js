@@ -163,6 +163,8 @@ function connectWebSocket() {
 
     setWsConnectionState('connecting');
     ws = new WebSocket(WS_URL);
+    // 方便其他脚本（如 mc_console.js）访问当前 WebSocket 实例
+    try { window.ws = ws; } catch (e) { /* ignore if not allowed */ }
     ws.onopen = () => {
         const oldState = prevWsState;
         setWsConnectionState('connected');
@@ -179,6 +181,7 @@ function connectWebSocket() {
         }
     };
     ws.onclose = (event) => {
+        try { if (window.ws === ws) window.ws = null; } catch (e) {}
         const oldState = prevWsState;
         setWsConnectionState('disconnected');
         if (event.code === 1008) {

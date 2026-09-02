@@ -25,7 +25,8 @@ const MC_REFRESH_PRESET_VALUES = {
   standard: { playerListIntervalSeconds: 5, statsIntervalSeconds: 15, tpsIntervalSeconds: 5 },
   slow: { playerListIntervalSeconds: 15, statsIntervalSeconds: 30, tpsIntervalSeconds: 15 }
 };
-let mcStatsChartRange = '15m';
+// 与页面默认选择保持一致
+let mcStatsChartRange = '30m';
 let currentMcServerId = null;
 
 function sleep(ms) {
@@ -238,7 +239,8 @@ function appendMcLog(line) {
     level = classifyMcLogLevel(text);
   }
 
-  text = text.replace(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\s+/, '');
+  // 去除常见的 ISO 时间前缀（带或不带毫秒与 Z）以避免显示重复时间戳
+  text = text.replace(/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\s+/, '');
 
   if (!level) return;
   mcLogLines.push({ text, level });
@@ -386,13 +388,15 @@ function initMcStatsChart() {
     mcStatsChart = null;
   }
   const ctx = canvas.getContext('2d');
-  const gradientCpu = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  // canvas.height 在某些布局/初始渲染阶段可能为 0，使用合理的回退值避免创建空渐变
+  const ch = canvas.height > 0 ? canvas.height : 150;
+  const gradientCpu = ctx.createLinearGradient(0, 0, 0, ch);
   gradientCpu.addColorStop(0, 'rgba(59, 130, 246, 0.28)');
   gradientCpu.addColorStop(1, 'rgba(59, 130, 246, 0.04)');
-  const gradientMem = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  const gradientMem = ctx.createLinearGradient(0, 0, 0, ch);
   gradientMem.addColorStop(0, 'rgba(16, 185, 129, 0.24)');
   gradientMem.addColorStop(1, 'rgba(16, 185, 129, 0.04)');
-  const gradientTps = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  const gradientTps = ctx.createLinearGradient(0, 0, 0, ch);
   gradientTps.addColorStop(0, 'rgba(245, 158, 11, 0.2)');
   gradientTps.addColorStop(1, 'rgba(245, 158, 11, 0.04)');
 
@@ -1017,14 +1021,13 @@ async function loadMcLogs() {
       showToast(data.message || '获取 MC 日志失败', 'error');
       return;
     }
+    // 保持完整日志级别（包括 debug）以便前端展示与筛选
     mcLogLines = [];
     if (Array.isArray(data.logs)) {
       data.logs.slice(-1000).forEach((item) => {
         const text = String(item || '');
         const level = classifyMcLogLevel(text);
-        if (['info', 'warn', 'error'].includes(level)) {
-          mcLogLines.push({ text, level });
-        }
+        mcLogLines.push({ text, level });
       });
     }
     renderMcConsole();
@@ -1243,21 +1246,24 @@ async function loadMcServers() {
 }
 
 function sendMcSubscription(serverId) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
+  // 支持跨脚本环境安全访问 WebSocket（可能由另一个脚本定义为 ws 或 window.ws）
+  const activeWs = (typeof ws !== 'undefined' && ws) ? ws : (typeof window !== 'undefined' && window.ws) ? window.ws : null;
+  if (!activeWs || activeWs.readyState !== WebSocket.OPEN) {
     console.warn('WebSocket 未连接，延迟订阅 MC 事件');
     return;
   }
   const payload = { type: 'subscribe_mc', serverId: serverId || '*' };
-  try { ws.send(JSON.stringify(payload)); } catch (e) { console.warn('订阅 MC 事件失败', e); }
+  try { activeWs.send(JSON.stringify(payload)); } catch (e) { console.warn('订阅 MC 事件失败', e); }
 }
 
 function disconnectMcSubscription(serverId) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
+  const activeWs = (typeof ws !== 'undefined' && ws) ? ws : (typeof window !== 'undefined' && window.ws) ? window.ws : null;
+  if (!activeWs || activeWs.readyState !== WebSocket.OPEN) {
     console.warn('WebSocket 未连接，无法取消订阅 MC 事件');
     return;
   }
   const payload = { type: 'unsubscribe_mc', serverId: serverId || '*' };
-  try { ws.send(JSON.stringify(payload)); } catch (e) { console.warn('取消订阅 MC 事件失败', e); }
+  try { activeWs.send(JSON.stringify(payload)); } catch (e) { console.warn('取消订阅 MC 事件失败', e); }
 }
 
 function switchMcServer() {
