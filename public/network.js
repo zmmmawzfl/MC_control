@@ -3,7 +3,7 @@ const net = require('net');
 
 /**
  * 返回一个 Express Router，负责处理 /auth/check 和网络名单管理接口
- * @param {import('mysql2/promise').Pool} pool - 数据库连接池
+ * @param {{ execute: Function }} pool - 本地 SQLite 数据库适配器
  * @param {import('winston').Logger} logger - 日志记录器
  * @returns {express.Router}
  */
@@ -22,20 +22,20 @@ module.exports = function(poolFactory, logger) {
     async function ensureNetworkTables(pool) {
         await pool.execute(`
             CREATE TABLE IF NOT EXISTS network_ips (
-                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                ip VARCHAR(45) NOT NULL UNIQUE,
-                tags JSON NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ip TEXT NOT NULL UNIQUE,
+                tags TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
         `);
         await pool.execute(`
             CREATE TABLE IF NOT EXISTS network_ip_requests (
-                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                ip VARCHAR(45) NOT NULL UNIQUE,
-                first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                request_count INT UNSIGNED NOT NULL DEFAULT 1
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ip TEXT NOT NULL UNIQUE,
+                first_seen TEXT DEFAULT CURRENT_TIMESTAMP,
+                last_seen TEXT DEFAULT CURRENT_TIMESTAMP,
+                request_count INTEGER NOT NULL DEFAULT 1
+            );
         `);
     }
 
@@ -67,8 +67,8 @@ module.exports = function(poolFactory, logger) {
                     await pool.execute(
                         `INSERT INTO network_ip_requests (ip, request_count) 
                          VALUES (?, 1) 
-                         ON DUPLICATE KEY UPDATE 
-                             last_seen = CURRENT_TIMESTAMP, 
+                         ON CONFLICT(ip) DO UPDATE SET
+                             last_seen = CURRENT_TIMESTAMP,
                              request_count = request_count + 1`,
                         [ip]
                     );
@@ -129,7 +129,7 @@ module.exports = function(poolFactory, logger) {
 
             await pool.execute(
                 `INSERT INTO network_ips (ip, tags) VALUES (?, ?)
-                 ON DUPLICATE KEY UPDATE tags = VALUES(tags)`,
+                 ON CONFLICT(ip) DO UPDATE SET tags = excluded.tags`,
                 [normalizedIp, JSON.stringify(tagArray)]
             );
 
@@ -231,7 +231,7 @@ module.exports = function(poolFactory, logger) {
             // 添加到白名单
             await pool.execute(
                 `INSERT INTO network_ips (ip, tags) VALUES (?, ?)
-                 ON DUPLICATE KEY UPDATE tags = VALUES(tags)`,
+                 ON CONFLICT(ip) DO UPDATE SET tags = excluded.tags`,
                 [ip, JSON.stringify([])]
             );
 

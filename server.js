@@ -3,7 +3,6 @@ const http = require('http');
 const WebSocket = require('ws');
 const path = require('path');
 const fs = require('fs');
-const mysql = require('mysql2/promise');
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
 const winston = require('winston');
@@ -11,6 +10,7 @@ const DailyRotateFile = require('winston-daily-rotate-file');
 const { McServerManager, createMcControlRouter } = require('./mc_server');
 const createNetworkRouter = require('./public/network');
 const dotenv = require('dotenv');
+const { createSqliteDatabase } = require('./sqlite_db');
 
 const envPath = path.join(__dirname, '.env');
 const sampleEnvPath = path.join(__dirname, '示例.env');
@@ -37,109 +37,63 @@ if (!AUTH_CONFIG.password || !AUTH_CONFIG.secret) {
   process.exit(1);
 }
 
-// ========== 数据库连接配置 ==========
-const DB_HOST = process.env.DB_HOST || 'localhost';
-const DB_PORT = parseInt(process.env.DB_PORT, 10) || 3306;
-const DB_USER = process.env.DB_USER;
-const DB_PASSWORD = process.env.DB_PASSWORD;
-const DB_NAME = process.env.DB_NAME || 'mc_servers';
-
-if (!DB_USER || !DB_PASSWORD) {
-  console.error('请设置 DB_USER 和 DB_PASSWORD 环境变量');
-  process.exit(1);
-}
-
-const dbConfig = {
-  host: DB_HOST,
-  port: DB_PORT,
-  user: DB_USER,
-  password: DB_PASSWORD,
-  waitForConnections: true,
-  connectionLimit: 10,
-  charset: 'utf8mb4',
-};
+// ========== 本地 SQLite 数据库配置 ==========
+const DB_FILE = path.resolve(__dirname, process.env.DB_FILE || path.join('data', 'mc_control.db'));
 
 let pool;
-
-async function ensureDatabaseExists() {
-  const connection = await mysql.createConnection({
-    host: DB_HOST,
-    port: DB_PORT,
-    user: DB_USER,
-    password: DB_PASSWORD,
-    charset: 'utf8mb4',
-  });
-  await connection.query(`CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
-  await connection.end();
-}
 
 async function ensureDatabaseTables(dbPool) {
   await dbPool.execute(`
     CREATE TABLE IF NOT EXISTS mc_servers (
-      id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-      name VARCHAR(100) NOT NULL UNIQUE,
-      display_name VARCHAR(100),
-      config JSON NOT NULL,
-      auto_start TINYINT(1) DEFAULT 0,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      display_name TEXT,
+      config TEXT NOT NULL,
+      auto_start INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   await dbPool.execute(`
     CREATE TABLE IF NOT EXISTS network_ips (
-      id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-      ip VARCHAR(45) NOT NULL UNIQUE,
-      tags JSON NOT NULL,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ip TEXT NOT NULL UNIQUE,
+      tags TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   await dbPool.execute(`
     CREATE TABLE IF NOT EXISTS network_ip_requests (
-      id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-      ip VARCHAR(45) NOT NULL UNIQUE,
-      first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      request_count INT UNSIGNED NOT NULL DEFAULT 1
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ip TEXT NOT NULL UNIQUE,
+      first_seen TEXT DEFAULT CURRENT_TIMESTAMP,
+      last_seen TEXT DEFAULT CURRENT_TIMESTAMP,
+      request_count INTEGER NOT NULL DEFAULT 1
+    );
   `);
 
   await dbPool.execute(`
     CREATE TABLE IF NOT EXISTS mc_stats_history (
-      id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-      server_id INT UNSIGNED NOT NULL,
-      cpu DECIMAL(8,2) NULL,
-      memory_used BIGINT UNSIGNED NULL,
-      memory_total BIGINT UNSIGNED NULL,
-      tps DECIMAL(8,2) NULL,
-      recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      INDEX idx_mc_stats_history_server_time (server_id, recorded_at)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      server_id INTEGER NOT NULL,
+      cpu REAL NULL,
+      memory_used INTEGER NULL,
+      memory_total INTEGER NULL,
+      tps REAL NULL,
+      recorded_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_mc_stats_history_server_time
+      ON mc_stats_history (server_id, recorded_at);
   `);
 }
 
 async function connectDatabaseWithRetry() {
-  const maxAttempts = Number(process.env.DB_RETRY_ATTEMPTS || 8);
-  const retryDelayMs = Number(process.env.DB_RETRY_DELAY_MS || 3000);
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      await ensureDatabaseExists();
-      pool = mysql.createPool({
-        ...dbConfig,
-        database: DB_NAME,
-      });
-      await pool.query('SELECT 1');
-      return pool;
-    } catch (err) {
-      logger.error(`数据库连接失败 (第 ${attempt}/${maxAttempts} 次):`, err);
-      if (attempt >= maxAttempts) throw err;
-      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
-    }
-  }
-
-  throw new Error('数据库连接失败');
+  fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
+  pool = createSqliteDatabase(DB_FILE);
+  await pool.execute('SELECT 1');
+  return pool;
 }
 
 // ========== 日志系统（轻量） ==========

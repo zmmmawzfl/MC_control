@@ -11,7 +11,7 @@ MC Control 是一个面向 Minecraft 服务器的轻量化 Web 管理面板，�
 - 支持 CPU / 内存 / TPS 监控
 - 支持备份与恢复世界数据
 - 支持多实例管理与自动重启配置
-- 支持基于 MySQL 的实例持久化存储
+- 支持基于本地 SQLite `.db` 文件的实例持久化存储
 
 ## 项目结构
 
@@ -23,7 +23,7 @@ MC Control 是一个面向 Minecraft 服务器的轻量化 Web 管理面板，�
 ## 环境要求
 
 - Node.js 18+
-- MySQL / MariaDB
+- SQLite（自动创建本地数据库文件）
 - 可运行 Java 的环境（Minecraft 服务端依赖）
 
 ## 安装步骤
@@ -54,13 +54,11 @@ copy 示例.env .env
 ```env
 WEB_PASSWORD=your_secure_password_here
 WEB_AUTH_SECRET=your_random_secret_key_32chars
-DB_HOST=localhost
-DB_PORT=3306
-DB_USER=your_db_user
-DB_PASSWORD=your_db_password
-DB_NAME=your_database_name
+DB_FILE=data/mc_control.db
 PORT=3233
 ```
+
+数据库文件默认创建在项目根目录的 `data/mc_control.db`，也可以通过 `DB_FILE` 指定其他路径。
 
 4. 启动服务
 

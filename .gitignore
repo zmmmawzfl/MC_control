@@ -4,6 +4,7 @@ node_modules/.package-lock.json
 known_clients.json
 .env
 backups/
+data/
 mc_config.json
 data/mc.pid
 .trae

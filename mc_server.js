@@ -143,7 +143,7 @@ class McServer {
 
     try {
       await this.dbPool.execute(
-        'INSERT INTO mc_stats_history (server_id, cpu, memory_used, memory_total, tps, recorded_at) VALUES (?, ?, ?, ?, ?, NOW())',
+        'INSERT INTO mc_stats_history (server_id, cpu, memory_used, memory_total, tps, recorded_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)',
         [Number(this.id), safeCpu, safeMemory, safeMemoryTotal, safeTps]
       );
     } catch (e) {
@@ -1461,7 +1461,7 @@ class McServerManager {
     const [rows] = await this.dbPool.execute(
       `SELECT cpu, memory_used, memory_total, tps, recorded_at
        FROM mc_stats_history
-       WHERE server_id = ? AND recorded_at >= DATE_SUB(NOW(), INTERVAL ? SECOND)
+      WHERE server_id = ? AND recorded_at >= datetime('now', '-' || ? || ' seconds')
        ORDER BY recorded_at ASC`,
       [serverKey, seconds]
     );
@@ -1503,7 +1503,7 @@ class McServerManager {
         return srv;
       } catch (e) {
         const msg = String(e && e.message || '').toLowerCase();
-        if (msg.includes('duplicate') || e && e.code === 'ER_DUP_ENTRY') {
+        if (msg.includes('duplicate') || msg.includes('unique constraint') || e && e.code === 'ER_DUP_ENTRY') {
           attempt += 1;
           attemptName = `${String(name)}-${attempt}`;
           continue;
