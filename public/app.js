@@ -181,7 +181,11 @@ function connectWebSocket() {
         }
     };
     ws.onclose = (event) => {
-        try { if (window.ws === ws) window.ws = null; } catch (e) {}
+        try {
+            if (window.ws === ws) window.ws = null;
+        } catch (e) {
+            // 浏览器可能禁止直接读写 window 上的自定义属性，忽略该异常。
+        }
         const oldState = prevWsState;
         setWsConnectionState('disconnected');
         if (event.code === 1008) {
@@ -206,7 +210,11 @@ function connectWebSocket() {
     ws.onerror = (err) => {
         console.error('WebSocket 错误:', err);
         // 将错误视为断开，触发重连流程（onclose）
-        try { ws.close(); } catch (e) {}
+        try {
+            ws.close();
+        } catch (e) {
+            // Socket 已经处于关闭状态时忽略。
+        }
         setWsConnectionState('disconnected');
     };
     ws.onmessage = (event) => {

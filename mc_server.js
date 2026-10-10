@@ -267,26 +267,8 @@ class McServer {
   }
 
   parseCronField(field, value, min, max) {
-    if (field === '*') return true;
-    if (field.includes(',')) {
-      return field.split(',').some((part) => this.parseCronField(part.trim(), value, min, max));
-    }
-    if (field.indexOf('/') > -1) {
-      const [base, step] = field.split('/');
-      const interval = parseInt(step, 10);
-      if (Number.isNaN(interval) || interval <= 0) return false;
-      if (base === '*') {
-        return (value - min) % interval === 0;
-      }
-      return false;
-    }
-    if (field.indexOf('-') > -1) {
-      const [start, end] = field.split('-').map((v) => parseInt(v, 10));
-      if (Number.isNaN(start) || Number.isNaN(end)) return false;
-      return value >= start && value <= end;
-    }
-    const expected = parseInt(field, 10);
-    return !Number.isNaN(expected) && value === expected;
+    if (!field || typeof field !== 'string') return false;
+    return this.parseCronFieldValue(field, value, min, max);
   }
 
   isCronScheduleDue(cronExpression, now) {
@@ -300,10 +282,12 @@ class McServer {
     const dayMatch = this.parseCronField(dayExpr, now.getDate(), 1, 31);
     const dowMatch = this.parseCronField(dowExpr, now.getDay(), 0, 6);
 
-    // Cron 的 day-of-month 和 day-of-week 在 Quartz/Unix 语义中通常是 OR 关系，
-    // 只有当两者都被显式限定时才需要交叉匹配；单一 '*' 视为全匹配。
-    const dayOrDowMatches = dayExpr === '*' || dowExpr === '*' ? dayMatch && dowMatch : dayMatch || dowMatch;
-    return minuteMatch && hourMatch && monthMatch && dayOrDowMatches;
+    // Cron 语义中，day-of-month 与 day-of-week 只有在两者都被限制时才是 OR 关系；
+    // 任一字段为 '*' 时，另一字段单独起约束作用。
+    if (dayExpr === '*' && dowExpr === '*') return minuteMatch && hourMatch && monthMatch;
+    if (dayExpr === '*') return minuteMatch && hourMatch && monthMatch && dowMatch;
+    if (dowExpr === '*') return minuteMatch && hourMatch && monthMatch && dayMatch;
+    return minuteMatch && hourMatch && monthMatch && (dayMatch || dowMatch);
   }
 
   getAutoBackupKey(now) {
@@ -505,19 +489,64 @@ class McServer {
     return args;
   }
 
+  parseCronFieldValue(field, value, min, max) {
+    if (!field || typeof field !== 'string') return false;
+    const parts = String(field).split(',').map((item) => item.trim()).filter(Boolean);
+    if (parts.length === 0) return false;
+
+    return parts.some((part) => {
+      if (part === '*') return true;
+      if (part.includes('/')) {
+        const [range, stepText] = part.split('/').map((item) => item.trim());
+        const step = Number(stepText);
+        if (!Number.isFinite(step) || step <= 0) return false;
+
+        let start = min;
+        let end = max;
+        if (range !== '*' && range !== '') {
+          if (range.includes('-')) {
+            const [rangeStart, rangeEnd] = range.split('-').map((item) => Number(item));
+            if (!Number.isFinite(rangeStart) || !Number.isFinite(rangeEnd) || rangeStart < min || rangeEnd > max || rangeStart > rangeEnd) {
+              return false;
+            }
+            start = rangeStart;
+            end = rangeEnd;
+          } else {
+            const singleValue = Number(range);
+            if (!Number.isFinite(singleValue) || singleValue < min || singleValue > max) return false;
+            start = singleValue;
+            end = singleValue;
+          }
+        }
+        return value >= start && value <= end && ((value - start) % step === 0);
+      }
+
+      if (part.includes('-')) {
+        const [start, end] = part.split('-').map((item) => Number(item));
+        if (!Number.isFinite(start) || !Number.isFinite(end) || start < min || end > max || start > end) return false;
+        return value >= start && value <= end;
+      }
+
+      const singleValue = Number(part);
+      if (!Number.isFinite(singleValue) || singleValue < min || singleValue > max) return false;
+      return value === singleValue;
+    });
+  }
+
   isCronFieldValid(field, min, max) {
     if (!field || typeof field !== 'string') return false;
-    if (field === '*') return true;
     const parts = String(field).split(',').map((item) => item.trim()).filter(Boolean);
     if (parts.length === 0) return false;
 
     for (const part of parts) {
       if (part === '*') continue;
       if (part.includes('/')) {
-        const [range, step] = part.split('/').map((item) => item.trim());
-        const interval = Number(step);
+        const [range, stepText] = part.split('/').map((item) => item.trim());
+        const interval = Number(stepText);
         if (!Number.isFinite(interval) || interval <= 0) return false;
-        if (range === '*' || range === '') continue;
+        if (range === '*' || range === '') {
+          continue;
+        }
         if (range.includes('-')) {
           const [start, end] = range.split('-').map((item) => Number(item));
           if (!Number.isFinite(start) || !Number.isFinite(end) || start < min || end > max || start > end) return false;
