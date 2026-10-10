@@ -600,7 +600,7 @@ class McServer {
   waitForSaveAllConfirmation(timeoutMs = 15000) {
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
-        const index = this.saveAllWaiters.indexOf(resolve);
+        const index = this.saveAllWaiters.indexOf(wrappedResolve);
         if (index !== -1) this.saveAllWaiters.splice(index, 1);
         resolve(false);
       }, timeoutMs);

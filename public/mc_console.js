@@ -20,11 +20,7 @@ const MC_STATS_CHART_RANGES = {
   '12h': 12 * 60 * 60 * 1000,
   '24h': 24 * 60 * 60 * 1000
 };
-const MC_REFRESH_PRESET_VALUES = {
-  fast: { playerListIntervalSeconds: 1, statsIntervalSeconds: 5, tpsIntervalSeconds: 1 },
-  standard: { playerListIntervalSeconds: 5, statsIntervalSeconds: 15, tpsIntervalSeconds: 5 },
-  slow: { playerListIntervalSeconds: 15, statsIntervalSeconds: 30, tpsIntervalSeconds: 15 }
-};
+let mcRefreshPresetValues = {};
 // 与页面默认选择保持一致
 let mcStatsChartRange = '30m';
 let currentMcServerId = null;
@@ -634,17 +630,22 @@ function getMcRefreshPresetFromConfig(cfg = {}) {
   const playerList = Number(cfg.playerListIntervalSeconds || 0);
   const stats = Number(cfg.statsIntervalSeconds || 0);
   const tps = Number(cfg.tpsIntervalSeconds || 0);
-  if (playerList === 1 && stats === 5 && tps === 1) return 'fast';
-  if (playerList === 5 && stats === 15 && tps === 5) return 'standard';
-  if (playerList === 15 && stats === 30 && tps === 15) return 'slow';
+  for (const [preset, values] of Object.entries(mcRefreshPresetValues)) {
+    if (
+      playerList === values.playerListIntervalSeconds
+      && stats === values.statsIntervalSeconds
+      && tps === values.tpsIntervalSeconds
+    ) {
+      return preset;
+    }
+  }
   return 'custom';
 }
 
 function getMcRefreshPresetValue(preset) {
-  if (preset === 'custom') {
-    return { playerListIntervalSeconds: 5, statsIntervalSeconds: 15, tpsIntervalSeconds: 5 };
-  }
-  return MC_REFRESH_PRESET_VALUES[preset] || MC_REFRESH_PRESET_VALUES.standard;
+  const values = mcRefreshPresetValues[preset] || mcRefreshPresetValues.standard;
+  if (!values) throw new Error('未加载 MC 刷新频率预设');
+  return values;
 }
 
 function toNumber(value) {
@@ -827,6 +828,7 @@ async function loadMcConfig() {
             return;
         }
         const cfg = data.config;
+        mcRefreshPresetValues = data.refreshPresets || {};
 
         document.getElementById('mcJavaPath').value = cfg.javaPath || 'java';
         document.getElementById('mcMinMemory').value = cfg.minMemory || '1024M';
