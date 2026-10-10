@@ -25,6 +25,7 @@ const STATS_POLL_INITIAL_DELAY_MS = Number(process.env.MC_STATS_POLL_INITIAL_DEL
 const STATS_POLL_INTERVAL_FLOOR_MS = Number(process.env.MC_STATS_POLL_INTERVAL_FLOOR_MS) || 3000;
 const MC_LOG_FLUSH_INTERVAL_MS = Number(process.env.MC_LOG_FLUSH_INTERVAL_MS) || 4000;
 const MC_LOG_FLUSH_THRESHOLD = Number(process.env.MC_LOG_FLUSH_THRESHOLD) || 100;
+const MC_STOP_TIMEOUT_MS = 60 * 1000;
 
 // 阈值：CPU% 与 内存变动小于阈值将不会触发更新，减少网络与处理开销
 const MC_STATS_CPU_THRESHOLD = Number(process.env.MC_STATS_CPU_THRESHOLD) || 0.5; // 百分比
@@ -101,6 +102,7 @@ class McServer {
     this.lastAutoBackupKey = null;
     this.backupInProgress = false;
     this.restartResetTimer = null;
+    this.stopKillTimer = null;
     this.saveAllWaiters = [];
     this._lastPlayerRefreshAt = 0;
     this._processDiscoveryCache = null;
@@ -638,7 +640,8 @@ class McServer {
 
     const detection = jschardet.detect(data);
     const encoding = detection && detection.encoding ? String(detection.encoding).toLowerCase() : null;
-    if (encoding && encoding !== 'ascii') {
+    const confidence = detection && Number(detection.confidence) || 0;
+    if (encoding && encoding !== 'ascii' && (encoding.includes('gb') || confidence >= 0.8)) {
       try {
         if (encoding.includes('gb') || encoding.includes('cp936')) {
           return iconv.decode(data, 'gb18030');
@@ -713,18 +716,60 @@ class McServer {
       .then(async () => {
         await fs.promises.appendFile(this.logFile, chunk);
       })
-      .catch(() => {});
+      .catch((error) => {
+        console.error(`写入 MC 日志失败 ${this.logFile}: ${error.message}`);
+      });
   }
 
 
-  clearLogs() {
+  async clearLogs() {
     this.logs = [];
     this.logBuffer = [];
-    try {
-      fs.writeFileSync(this.logFile, '', 'utf8');
-    } catch (e) {
-      // ignore file write errors
+    this._logWriteQueue = this._logWriteQueue.then(() => fs.promises.writeFile(this.logFile, '', 'utf8'));
+    await this._logWriteQueue;
+  }
+
+  async dispose() {
+    if (this.logFlushTimer) {
+      clearInterval(this.logFlushTimer);
+      this.logFlushTimer = null;
     }
+    this.stopPlayerListPolling();
+    this.stopStatsPolling();
+    this.stopTpsPolling();
+    this.stopAutoRestart();
+    if (this.autoBackupTimer) {
+      clearInterval(this.autoBackupTimer);
+      this.autoBackupTimer = null;
+    }
+    this.clearRestartResetTimer();
+    if (this.stopKillTimer) {
+      clearTimeout(this.stopKillTimer);
+      this.stopKillTimer = null;
+    }
+    this.flushLogBuffer();
+    await this._logWriteQueue;
+  }
+
+  createProcessOutputHandler(prefix = '') {
+    let pending = Buffer.alloc(0);
+    const write = (data) => {
+      const chunk = Buffer.isBuffer(data) ? data : Buffer.from(String(data || ''));
+      pending = pending.length ? Buffer.concat([pending, chunk]) : chunk;
+      let newlineIndex = pending.indexOf(0x0a);
+      while (newlineIndex !== -1) {
+        const line = pending.subarray(0, newlineIndex + 1);
+        pending = pending.subarray(newlineIndex + 1);
+        this.pushLog(prefix + this.decodeProcessOutput(line));
+        newlineIndex = pending.indexOf(0x0a);
+      }
+    };
+    const end = () => {
+      if (!pending.length) return;
+      this.pushLog(prefix + this.decodeProcessOutput(pending));
+      pending = Buffer.alloc(0);
+    };
+    return { write, end };
   }
 
   getLogs(limit = 200) {
@@ -956,13 +1001,21 @@ class McServer {
       this.pushLog(`启动命令: ${program} ${args.join(' ')}，PID: ${actualPid}`);
 
       if (this.process.stdout) {
-        this.process.stdout.on('data', (data) => this.pushLog(this.decodeProcessOutput(data)));
+        const stdoutHandler = this.createProcessOutputHandler();
+        this.process.stdout.on('data', stdoutHandler.write);
+        this.process.stdout.on('end', stdoutHandler.end);
       }
       if (this.process.stderr) {
-        this.process.stderr.on('data', (data) => this.pushLog('[STDERR] ' + this.decodeProcessOutput(data)));
+        const stderrHandler = this.createProcessOutputHandler('[STDERR] ');
+        this.process.stderr.on('data', stderrHandler.write);
+        this.process.stderr.on('end', stderrHandler.end);
       }
 
       this.process.on('close', (code) => {
+        if (this.stopKillTimer) {
+          clearTimeout(this.stopKillTimer);
+          this.stopKillTimer = null;
+        }
         this.pushLog(`进程已退出，退出码: ${code}`);
         this.process = null;
         this.clearManagedProcessState();
@@ -975,6 +1028,10 @@ class McServer {
         }
       });
       this.process.on('error', (err) => {
+        if (this.stopKillTimer) {
+          clearTimeout(this.stopKillTimer);
+          this.stopKillTimer = null;
+        }
         this.pushLog(`启动失败: ${err.message}`);
         this.process = null;
         this.clearManagedProcessState();
@@ -1007,6 +1064,16 @@ class McServer {
         this.process.stdin.write('stop\n');
       }
       this.pushLog('已发送 stop 命令');
+      if (!this.stopKillTimer) {
+        const processRef = this.process;
+        this.stopKillTimer = setTimeout(() => {
+          this.stopKillTimer = null;
+          if (this.process === processRef) {
+            this.pushLog('服务器 60 秒内未响应 stop，正在强制终止');
+            this.kill();
+          }
+        }, MC_STOP_TIMEOUT_MS);
+      }
       return true;
     } catch (e) {
       this.pushLog(`发送 stop 失败: ${e.message}`);
@@ -1022,19 +1089,27 @@ class McServer {
       this.stopStatsPolling();
       this.stopTpsPolling();
       this.stopAutoRestart();
+      if (this.stopKillTimer) {
+        clearTimeout(this.stopKillTimer);
+        this.stopKillTimer = null;
+      }
       const processRef = this.process;
       const pid = processRef.pid;
       if (!pid) return false;
       if (process.platform === 'win32') {
-        spawn('taskkill', ['/pid', String(pid), '/f', '/t'], { windowsHide: true });
+        const taskkill = spawn('taskkill', ['/pid', String(pid), '/f', '/t'], { windowsHide: true });
+        taskkill.on('error', (err) => this.pushLog(`taskkill 启动失败: ${err.message}`));
+        taskkill.on('close', (code) => {
+          if (code !== 0) this.pushLog(`taskkill 退出码: ${code}`);
+        });
       } else {
         try {
-          process.kill(pid, 'SIGTERM');
+          process.kill(pid, 'SIGKILL');
         } catch (e) {
-          spawn('kill', ['-TERM', String(pid)], { windowsHide: true });
+          spawn('kill', ['-KILL', String(pid)], { windowsHide: true });
         }
       }
-      this.pushLog('已强制终止进程');
+      this.pushLog('已请求强制终止进程');
       if (processRef && typeof processRef.once === 'function' && processRef.exitCode === null) {
         processRef.once('close', () => {
           if (this.process === processRef) {
@@ -1121,6 +1196,7 @@ class McServer {
   }
 
   async restoreBackup(name) {
+    const wasRunning = !!this.process;
     const backupPath = this.getBackupPath(name);
     if (!fs.existsSync(backupPath)) {
       throw new Error('备份文件不存在');
@@ -1134,7 +1210,7 @@ class McServer {
       }
     }
     await this.extractBackupArchive(backupPath, this.resolveWorkingDir());
-    this.start();
+    if (wasRunning) this.start();
     return true;
   }
 
@@ -1155,7 +1231,7 @@ class McServer {
         : (archiver.create ? archiver.create('zip', { zlib: { level: 9 } }) : null);
       if (!archive) return reject(new Error('archiver module API 不兼容'));
 
-      output.on('close', resolve);
+      output.on('finish', resolve);
       output.on('error', reject);
       archive.on('warning', (err) => {
         if (err.code === 'ENOENT') this.pushLog(`archiver warning: ${err.message}`);
@@ -1312,24 +1388,9 @@ class McServer {
       this._managedProcessState = processRef.exitCode === null ? 'running' : 'stopped';
     };
 
-    processRef.removeAllListeners('spawn');
-    processRef.removeAllListeners('error');
-    processRef.removeAllListeners('exit');
-    processRef.removeAllListeners('close');
-
     processRef.on('spawn', refreshState);
-    processRef.on('error', () => {
-      this._managedProcessState = 'error';
-      this._managedProcessHandle = null;
-      this._managedProcessPid = null;
-    });
     processRef.on('exit', () => {
       this._managedProcessState = 'exited';
-      this._managedProcessHandle = null;
-      this._managedProcessPid = null;
-    });
-    processRef.on('close', () => {
-      this._managedProcessState = 'closed';
       this._managedProcessHandle = null;
       this._managedProcessPid = null;
     });
@@ -1488,7 +1549,8 @@ class McServerManager {
     const milliseconds = Number(windowMs) || 60 * 60 * 1000;
     const seconds = Math.max(1, Math.ceil(milliseconds / 1000));
     const [rows] = await this.dbPool.execute(
-      `SELECT cpu, memory_used, memory_total, tps, recorded_at
+      `SELECT cpu, memory_used, memory_total, tps,
+              strftime('%Y-%m-%dT%H:%M:%fZ', recorded_at) AS recorded_at
        FROM mc_stats_history
       WHERE server_id = ? AND recorded_at >= datetime('now', '-' || ? || ' seconds')
        ORDER BY recorded_at ASC`,
@@ -1587,6 +1649,7 @@ class McServerManager {
     if (srv && srv.process) {
       try { srv.kill(); } catch (e) { /* ignore kill errors */ }
     }
+    if (srv) await srv.dispose();
     if (this.dbPool) {
       const connection = await this.dbPool.getConnection();
       try {
@@ -1729,7 +1792,7 @@ function createMcControlRouter(mcManager, logger, options = {}) {
 
   // ========== 新增：清除日志 ==========
   router.post('/logs/clear', asyncHandler(async (req, res) => {
-    req.mcServer.clearLogs();
+    await req.mcServer.clearLogs();
     res.json({ success: true, message: '日志已清除' });
   }));
 

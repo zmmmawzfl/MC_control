@@ -7,9 +7,12 @@ const COMMAND_HISTORY_MAX = 50;
 const commandHistory = [];
 let historyIndex = -1;
 let mcLogLines = [];
+let mcLogSequence = 0;
+let mcLogLoadGeneration = 0;
 let mcConsoleFilterText = '';
 let mcStatsChart = null;
 const mcStatsHistory = { cpu: [], memory: [], tps: [], labels: [] };
+const mcStatsLivePoints = [];
 const MC_STATS_HISTORY_MAX_MS = 24 * 60 * 60 * 1000; // 扩展至 24 小时
 const MC_STATS_CHART_RANGES = {
   '5m': 5 * 60 * 1000,
@@ -239,7 +242,7 @@ function appendMcLog(line) {
   text = text.replace(/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\s+/, '');
 
   if (!level) return;
-  mcLogLines.push({ text, level });
+  mcLogLines.push({ text, level, sequence: ++mcLogSequence });
   if (mcLogLines.length > 1000) {
     mcLogLines.shift();
   }
@@ -537,26 +540,48 @@ function pruneMcStatsHistory() {
 }
 
 function resetMcStatsHistory() {
+  clearMcStatsSeries();
+  mcStatsLivePoints.length = 0;
+}
+
+function clearMcStatsSeries() {
   mcStatsHistory.cpu.length = 0;
   mcStatsHistory.memory.length = 0;
   mcStatsHistory.tps.length = 0;
   mcStatsHistory.labels.length = 0;
 }
 
-function applyMcStatsHistory(history = []) {
-  resetMcStatsHistory();
-  if (!Array.isArray(history) || history.length === 0) {
-    updateMcStatsChart();
-    return;
+function applyMcStatsHistory(history = [], livePoints = []) {
+  clearMcStatsSeries();
+  const points = [];
+  if (Array.isArray(history)) {
+    history.forEach((entry) => {
+      const recordedAt = entry.recorded_at || entry.timestamp || Date.now();
+      const timestampText = String(recordedAt);
+      const timestamp = new Date(/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d+)?$/.test(timestampText)
+        ? `${timestampText.replace(' ', 'T')}Z`
+        : recordedAt).getTime();
+      if (!Number.isFinite(timestamp)) return;
+      points.push({
+        timestamp,
+        cpu: toNumber(entry.cpu),
+        memory: toNumber(entry.memory_used) != null ? toNumber(entry.memory_used) / 1024 / 1024 : null,
+        tps: toNumber(entry.tps)
+      });
+    });
   }
-
-  history.forEach((entry) => {
-    const timestamp = new Date(entry.recorded_at || entry.timestamp || Date.now()).getTime();
-    if (!Number.isFinite(timestamp)) return;
-    mcStatsHistory.labels.push(timestamp);
-    mcStatsHistory.cpu.push(toNumber(entry.cpu));
-    mcStatsHistory.memory.push(toNumber(entry.memory_used) != null ? toNumber(entry.memory_used) / 1024 / 1024 : null);
-    mcStatsHistory.tps.push(toNumber(entry.tps));
+  const timestamps = new Set(points.map((point) => point.timestamp));
+  livePoints.forEach((point) => {
+    if (timestamps.has(point.timestamp)) return;
+    timestamps.add(point.timestamp);
+    points.push(point);
+  });
+  points.sort((left, right) => left.timestamp - right.timestamp);
+  points.forEach((point) => {
+    mcStatsHistory.labels.push(point.timestamp);
+    mcStatsHistory.cpu.push(point.cpu);
+    mcStatsHistory.memory.push(point.memory);
+    mcStatsHistory.tps.push(point.tps);
   });
 
   pruneMcStatsHistory();
@@ -566,13 +591,15 @@ function applyMcStatsHistory(history = []) {
 async function loadMcStatsHistory(windowMs = MC_STATS_HISTORY_MAX_MS) {
   try {
     await ensureMcServerSelected();
+    const serverId = currentMcServerId;
     const response = await fetch(`${mcApi('/stats/history')}?windowMs=${encodeURIComponent(windowMs)}`, { cache: 'no-store' });
     const data = await response.json();
+    if (serverId !== currentMcServerId) return;
     if (!data.success) {
       showToast(data.error || '加载性能历史失败', 'error');
       return;
     }
-    applyMcStatsHistory(data.history || []);
+    applyMcStatsHistory(data.history || [], mcStatsLivePoints);
   } catch (error) {
     console.error('加载性能历史失败:', error);
   }
@@ -690,7 +717,17 @@ function updateMcStats(cpu, memory, tps) {
   mcStatsHistory.cpu.push(cpuValue != null ? cpuValue : null);
   mcStatsHistory.memory.push(memoryValue.used != null ? memoryValue.used / 1024 / 1024 : null);
   mcStatsHistory.tps.push(tpsValue != null ? tpsValue : null);
-  mcStatsHistory.labels.push(Date.now());
+  const timestamp = Date.now();
+  mcStatsHistory.labels.push(timestamp);
+  mcStatsLivePoints.push({
+    timestamp,
+    cpu: cpuValue != null ? cpuValue : null,
+    memory: memoryValue.used != null ? memoryValue.used / 1024 / 1024 : null,
+    tps: tpsValue != null ? tpsValue : null
+  });
+  while (mcStatsLivePoints.length > 0 && timestamp - mcStatsLivePoints[0].timestamp > MC_STATS_HISTORY_MAX_MS) {
+    mcStatsLivePoints.shift();
+  }
 
   pruneMcStatsHistory();
   updateMcStatsChart();
@@ -1017,13 +1054,18 @@ if (mcSyncBtn) {
 async function loadMcLogs() {
   try {
     await ensureMcServerSelected();
+    const serverId = currentMcServerId;
+    const requestSequence = mcLogSequence;
+    const requestGeneration = ++mcLogLoadGeneration;
     const response = await fetch(mcApi('/logs'));
     const data = await response.json();
+    if (requestGeneration !== mcLogLoadGeneration || serverId !== currentMcServerId) return;
     if (!data.success) {
       showToast(data.message || '获取 MC 日志失败', 'error');
       return;
     }
     // 保持完整日志级别（包括 debug）以便前端展示与筛选
+    const liveLines = mcLogLines.filter((line) => line.sequence > requestSequence);
     mcLogLines = [];
     if (Array.isArray(data.logs)) {
       data.logs.slice(-1000).forEach((item) => {
@@ -1032,6 +1074,8 @@ async function loadMcLogs() {
         mcLogLines.push({ text, level });
       });
     }
+    mcLogLines.push(...liveLines);
+    if (mcLogLines.length > 1000) mcLogLines = mcLogLines.slice(-1000);
     renderMcConsole();
   } catch (error) {
     console.error('获取 MC 日志失败:', error);
@@ -1089,7 +1133,7 @@ async function stopMinecraftServer() {
         showConfirmModal('强制终止', msg, async () => {
           const resp = await fetch(mcApi('/kill'), { method: 'POST' });
           const data = await resp.json();
-          if (data.success) showToast('已强制终止 MC 服务器', 'success');
+          if (data.success) showToast('强制终止请求已发送，正在等待进程退出', 'success');
           else showToast('强制终止失败', 'error');
           await loadMcStatus();
         });
@@ -1119,7 +1163,7 @@ async function killMinecraftServer() {
     const response = await fetch(mcApi('/kill'), { method: 'POST' });
     const data = await response.json();
     if (data.success) {
-      showToast('已强制终止 MC 服务器', 'success');
+      showToast('强制终止请求已发送，正在等待进程退出', 'success');
     } else {
       showToast('强制终止失败', 'error');
     }
@@ -1159,7 +1203,6 @@ async function sendMcCommand(commandInput) {
       showToast('命令已发送', 'success');
       addToCommandHistory(command);
       if (input && !commandInput) input.value = '';
-      loadMcLogs();
       return true;
     } else {
       showToast(data.error || '命令发送失败', 'error');
@@ -1268,7 +1311,7 @@ function disconnectMcSubscription(serverId) {
   try { activeWs.send(JSON.stringify(payload)); } catch (e) { console.warn('取消订阅 MC 事件失败', e); }
 }
 
-function switchMcServer() {
+async function switchMcServer() {
   const sel = document.getElementById('mcServerSelect');
   if (!sel) return;
   const newId = sel.value || null;
@@ -1277,6 +1320,11 @@ function switchMcServer() {
     disconnectMcSubscription(currentMcServerId);
   }
   currentMcServerId = newId;
+  const serverId = newId;
+  mcLogLoadGeneration += 1;
+  mcLogLines = [];
+  resetMcStatsHistory();
+  renderMcConsole();
   updateMcSelectedServerLabel();
   if (!currentMcServerId) {
     return;
@@ -1284,9 +1332,8 @@ function switchMcServer() {
   loadMcStatus();
   loadMcLogs();
   loadMcPlayers();
-  loadMcConfig();
-  loadMcStatsHistory();
-  sendMcSubscription(currentMcServerId);
+  await loadMcConfig();
+  if (serverId === currentMcServerId) sendMcSubscription(serverId);
 }
 
 async function createMcServer() {

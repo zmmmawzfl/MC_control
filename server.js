@@ -97,7 +97,7 @@ async function connectDatabaseWithRetry() {
 }
 
 // ========== 日志系统（轻量） ==========
-const logDir = './logs';
+const logDir = path.join(__dirname, 'logs');
 if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
 
 const logger = winston.createLogger({
@@ -171,7 +171,7 @@ const loginLimiter = rateLimit({
 // ========== 认证中间件（静态资源放行） ==========
 function authMiddleware(req, res, next) {
   // 公开路径：登录页面、登录API
-  if (req.path === '/login.html' || req.path === '/api/login' || req.path === '/logout') {
+  if (req.path === '/login.html' || req.path === '/api/login' || req.path === '/api/auth/check' || req.path === '/logout') {
     return next();
   }
   // 静态资源扩展名直接放行（不要求认证）

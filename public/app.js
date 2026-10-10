@@ -235,15 +235,18 @@ function handleWebSocketMessage(data) {
             ws.send(JSON.stringify({ type: 'subscribe_mc_stats', serverId: '*' }));
             break;
         case 'mc_log':
+            if (String(data.serverId) !== String(document.getElementById('mcServerSelect')?.value || '')) return;
             if (typeof appendMcLog === 'function') appendMcLog({ text: data.line, level: data.level });
             break;
         case 'mc_players':
+            if (String(data.serverId) !== String(document.getElementById('mcServerSelect')?.value || '')) return;
             if (typeof renderPlayerList === 'function') {
                 renderPlayerList(data.players || [], data.count || 0, data.max || 0);
                 window.mcPlayersLastUpdate = Date.now();
             }
             break;
         case 'mc_stats':
+            if (String(data.serverId) !== String(document.getElementById('mcServerSelect')?.value || '')) return;
             if (typeof updateMcStats === 'function') {
                 updateMcStats(data.cpu, data.memory, data.tps);
             }
@@ -262,7 +265,7 @@ document.querySelectorAll('.nav-item[data-page]').forEach(item => {
         item.classList.add('active');
         document.querySelectorAll('.page').forEach(p => p.style.display = 'none');
         document.getElementById(page + 'Page').style.display = 'block';
-        document.getElementById('mcToolbar').style.display = 'flex';
+        document.getElementById('mcToolbar').style.display = page === 'system' ? 'none' : 'flex';
         if (page === 'mc_stats') {
             if (typeof loadMcStatus === 'function') loadMcStatus();
             if (typeof loadMcConfig === 'function') loadMcConfig();

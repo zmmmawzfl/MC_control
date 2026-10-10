@@ -22,7 +22,7 @@ MC Control 是一个面向 Minecraft 服务器的轻量化 Web 管理面板，�
 
 ## 环境要求
 
-- Node.js 18+
+- Node.js 22+
 - SQLite（自动创建本地数据库文件）
 - 可运行 Java 的环境（Minecraft 服务端依赖）
 
@@ -93,4 +93,3 @@ npm start
 ```bash
 npm run lint
 ```
-
